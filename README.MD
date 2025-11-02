@@ -1,3 +1,5 @@
+Forked from https://github.com/GTNewHorizons/NotEnoughIds (tag 2.1.6)
+
 # NotEnoughIds
 
 GTNH version of https://www.curseforge.com/minecraft/mc-mods/notenoughids

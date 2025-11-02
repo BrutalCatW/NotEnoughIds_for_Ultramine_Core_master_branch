@@ -26,15 +26,18 @@ public enum Mixins {
             "minecraft.MixinS24PacketBlockAction",
             "minecraft.MixinS26PacketMapChunkBulk",
             "minecraft.MixinItemInWorldManager",
-            "minecraft.MixinAnvilChunkLoader",
             "minecraft.MixinBlock"
         ).setApplyIf(() -> true)),
+    VANILLA_STARTUP_CHUNK_SAVE(new Builder("Start Vanilla Chunk Save").addTargetedMod(TargetedMod.VANILLA)
+        .setSide(Side.BOTH).setPhase(Phase.EARLY).addMixinClasses(
+            "minecraft.MixinAnvilChunkLoader"
+        ).setApplyIf(() -> !Common.ultramineTainted)),
     VANILLA_STARTUP_ONLY_WITHOUT_THERMOS(new Builder("Start Vanilla No Thermos").addTargetedMod(TargetedMod.VANILLA).setSide(Side.BOTH).setPhase(Phase.EARLY).addMixinClasses(
         "minecraft.MixinS21PacketChunkData"
-    ).setApplyIf(() -> !Common.thermosTainted)),
+    ).setApplyIf(() -> !Common.thermosTainted && !Common.ultramineTainted)),
     VANILLA_STARTUP_ONLY_WITH_THERMOS(new Builder("Start Vanilla with Thermos").addTargetedMod(TargetedMod.VANILLA).setSide(Side.BOTH).setPhase(Phase.EARLY).addMixinClasses(
         "minecraft.MixinS21PacketChunkDataThermosTainted"
-    ).setApplyIf(() -> Common.thermosTainted)),
+    ).setApplyIf(() -> Common.thermosTainted && !Common.ultramineTainted)),
     VANILLA_STARTUP_CLIENT(new Builder("Start Vanilla Client").addTargetedMod(TargetedMod.VANILLA)
         .setSide(Side.CLIENT).setPhase(Phase.EARLY).addMixinClasses(
             "minecraft.client.MixinRenderGlobal",
@@ -45,7 +48,12 @@ public enum Mixins {
     VANILLA_STARTUP_DATAWATCHER(new Builder("Start Vanilla DataWatcher").addTargetedMod(TargetedMod.VANILLA)
         .setSide(Side.BOTH).setPhase(Phase.EARLY).addMixinClasses(
             "minecraft.MixinDataWatcher"
-    ).setApplyIf(() -> NEIDConfig.ExtendDataWatcher));
+    ).setApplyIf(() -> NEIDConfig.ExtendDataWatcher)),
+    VANILLA_STARTUP_WITH_ULTRAMINE(new Builder("Start Vanilla with Ultramine").addTargetedMod(TargetedMod.VANILLA)
+        .setSide(Side.BOTH).setPhase(Phase.EARLY).addMixinClasses(
+            "minecraft.MixinExtendedBlockStorageUltramine",
+            "minecraft.MixinS21PacketChunkDataUltramine"
+    ).setApplyIf(() -> Common.ultramineTainted));
     // spotless:on
     private final List<String> mixinClasses;
     private final List<TargetedMod> targetedMods;
