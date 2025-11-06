@@ -121,6 +121,17 @@ public abstract class MixinS21PacketChunkDataUltramine {
                 copyFromSlot(slot, "copyLSB", lsb);
                 copyFromSlot(slot, "copyMSB", msb);
 
+                // DEBUG: Check first few bytes of LSB
+                StringBuilder lsbDebug = new StringBuilder();
+                for (int i = 0; i < Math.min(32, lsb.length); i++) {
+                    lsbDebug.append(String.format("%02X ", lsb[i] & 0xFF));
+                }
+                LOGGER.info(
+                        "EBS section={}, slot={}, first 32 LSB bytes: {}",
+                        sectionIndex,
+                        slot.getClass().getSimpleName(),
+                        lsbDebug.toString());
+
                 int nonZeroBlocks = 0;
                 int blocksWithMSB = 0;
 

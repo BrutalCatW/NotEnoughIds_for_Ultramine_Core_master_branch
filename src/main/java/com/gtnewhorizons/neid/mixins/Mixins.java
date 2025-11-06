@@ -52,7 +52,11 @@ public enum Mixins {
     VANILLA_STARTUP_WITH_ULTRAMINE(new Builder("Start Vanilla with Ultramine").addTargetedMod(TargetedMod.VANILLA)
         .setSide(Side.BOTH).setPhase(Phase.EARLY).addMixinClasses(
             "minecraft.MixinExtendedBlockStorageUltramine",
-            "minecraft.MixinS21PacketChunkDataUltramine"
+            "minecraft.MixinS21PacketChunkDataUltramine",
+            "minecraft.MixinAnvilChunkLoaderUltramine",
+            "minecraft.MixinEbsSaveFakeNbt",
+            "minecraft.MixinAnvilChunkLoaderForceConvert",
+            "minecraft.MixinAnvilChunkLoaderAsyncDebug"
     ).setApplyIf(() -> Common.ultramineTainted));
     // spotless:on
     private final List<String> mixinClasses;

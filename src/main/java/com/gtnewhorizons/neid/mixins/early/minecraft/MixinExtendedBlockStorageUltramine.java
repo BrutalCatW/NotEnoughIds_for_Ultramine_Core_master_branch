@@ -34,11 +34,11 @@ public abstract class MixinExtendedBlockStorageUltramine {
     private short[] block16BMetaArray;
 
     /**
-     * No-op injection point. Synchronization handled by setBlockId injection and copy() RETURN.
+     * No-op: Ultramine writes DIRECTLY to MemSlot (not NEID arrays), so no sync needed before copy().
      */
     @Inject(method = "copy", at = @At("HEAD"), remap = false, require = 0)
     private void neid$syncBeforeCopy(CallbackInfoReturnable<ExtendedBlockStorage> cir) {
-        // No-op: Data synced by setBlockId injection
+        // No-op: MemSlot already has correct data from ultramine's setBlockId()
     }
 
     /**
@@ -84,16 +84,10 @@ public abstract class MixinExtendedBlockStorageUltramine {
     }
 
     /**
-     * Also sync before packet generation methods that might be called directly. ultramine's S21PacketChunkData
-     * constructor may call getSlot() directly.
+     * DO NOT sync before getSlot()! This would overwrite MemSlot (which has correct data from worldgen/ultramine) with
+     * NEID arrays (which are empty because ultramine writes directly to MemSlot). Syncing only needed: 1) After loading
+     * from NBT (MixinAnvilChunkLoaderUltramine) 2) After setBlockId (already handled above)
      */
-    @Inject(method = "getSlot", at = @At("HEAD"), remap = false, require = 0)
-    private void neid$syncToMemSlotBeforeGet(CallbackInfoReturnable<Object> cir) {
-        if (DEBUG) {
-            LOGGER.debug("Syncing NEID arrays to MemSlot before getSlot()");
-        }
-        syncNeidArraysToMemSlot();
-    }
 
     /**
      * Synchronizes all 4096 blocks from NEID's 16-bit arrays to ultramine's MemSlot.
