@@ -1,0 +1,736 @@
+From 99c0d15c625a6a974f42a492636d3b5955d76e2f Mon Sep 17 00:00:00 2001
+From: vlad20012 <beskvlad@yandex.ru>
+Date: Sun, 23 Apr 2017 16:29:32 +0300
+Subject: [PATCH] [optim] Optimized memory usage for structureMap
+
+---
+ .../net/minecraft/nbt/NBTOutputStream.java    |  77 +++++
+ .../world/gen/structure/MapGenStructure.java  |   7 +
+ .../gen/structure/MapGenStructureData.java    |  22 +-
+ .../gen/structure/StructureComponent.java     |  17 ++
+ .../world/gen/structure/StructureStart.java   |   9 +-
+ .../minecraft/world/storage/MapStorage.java   |  19 ++
+ .../ultramine/server/internal/UMHooks.java    |  89 ++++++
+ .../server/util/ListAsLinkedList.java         | 279 ++++++++++++++++++
+ 8 files changed, 516 insertions(+), 3 deletions(-)
+ create mode 100644 src/main/java/net/minecraft/nbt/NBTOutputStream.java
+ create mode 100644 src/main/java/org/ultramine/server/util/ListAsLinkedList.java
+
+diff --git a/src/main/java/net/minecraft/nbt/NBTOutputStream.java b/src/main/java/net/minecraft/nbt/NBTOutputStream.java
+new file mode 100644
+index 00000000..c169f496
+--- /dev/null
++++ b/src/main/java/net/minecraft/nbt/NBTOutputStream.java
+@@ -0,0 +1,77 @@
++package net.minecraft.nbt;
++
++import java.io.DataOutputStream;
++import java.io.IOException;
++
++// Localed in net.minecraft.nbt package due to access issues
++public class NBTOutputStream implements AutoCloseable
++{
++	private final DataOutputStream out;
++
++	public NBTOutputStream(DataOutputStream out) throws IOException
++	{
++		this.out = out;
++		out.writeByte((byte)10);
++		out.writeUTF("");
++	}
++
++	public void startCompoundTag(String name) throws IOException
++	{
++		out.writeByte((byte)10);
++		out.writeUTF(name);
++	}
++
++	public void endCompoundTag() throws IOException
++	{
++		out.writeByte((byte)0);
++	}
++
++	public void startTagList(String name, int tagType, int count) throws IOException
++	{
++		out.writeByte((byte)9);
++		out.writeUTF(name);
++		out.writeByte((byte)tagType);
++		out.writeInt(count);
++	}
++
++	public void entTagList() throws IOException
++	{
++
++	}
++
++	public void writeListItemTag(NBTBase tag) throws IOException
++	{
++		tag.write(out);
++	}
++
++	public void writeTag(String name, NBTBase tag) throws IOException
++	{
++		out.writeByte(tag.getId());
++
++		if(tag.getId() != 0)
++		{
++			out.writeUTF(name);
++			tag.write(out);
++		}
++	}
++
++	public void writeInt(String name, int value) throws IOException
++	{
++		out.writeByte((byte)3);
++		out.writeUTF(name);
++		out.writeInt(value);
++	}
++
++	public void writeString(String name, String value) throws IOException
++	{
++		out.writeByte((byte)8);
++		out.writeUTF(name);
++		out.writeUTF(value);
++	}
++
++	public void close() throws IOException
++	{
++		out.writeByte((byte)0);
++		out.close();
++	}
++}
+diff --git a/src/main/java/net/minecraft/world/gen/structure/MapGenStructure.java b/src/main/java/net/minecraft/world/gen/structure/MapGenStructure.java
+index 8b72ee73..7960802d 100644
+--- a/src/main/java/net/minecraft/world/gen/structure/MapGenStructure.java
++++ b/src/main/java/net/minecraft/world/gen/structure/MapGenStructure.java
+@@ -251,6 +251,11 @@ private void func_143027_a(World p_143027_1_)
+ 			else
+ 			{
+ 				NBTTagCompound nbttagcompound = this.field_143029_e.func_143041_a();
++				if(nbttagcompound == null)
++				{
++					this.structureMap = field_143029_e.getStructureMap();
++					return;
++				}
+ 				Iterator iterator = nbttagcompound.func_150296_c().iterator();
+ 
+ 				while (iterator.hasNext())
+@@ -276,6 +281,8 @@ private void func_143027_a(World p_143027_1_)
+ 					}
+ 				}
+ 			}
++
++			field_143029_e.replaceNbtWithStrictureMap(this.structureMap);
+ 		}
+ 	}
+ 
+diff --git a/src/main/java/net/minecraft/world/gen/structure/MapGenStructureData.java b/src/main/java/net/minecraft/world/gen/structure/MapGenStructureData.java
+index e7bcfc76..a63a2c01 100644
+--- a/src/main/java/net/minecraft/world/gen/structure/MapGenStructureData.java
++++ b/src/main/java/net/minecraft/world/gen/structure/MapGenStructureData.java
+@@ -3,6 +3,8 @@
+ import net.minecraft.nbt.NBTTagCompound;
+ import net.minecraft.world.WorldSavedData;
+ 
++import java.util.Map;
++
+ public class MapGenStructureData extends WorldSavedData
+ {
+ 	private NBTTagCompound field_143044_a = new NBTTagCompound();
+@@ -20,12 +22,15 @@ public void readFromNBT(NBTTagCompound p_76184_1_)
+ 
+ 	public void writeToNBT(NBTTagCompound p_76187_1_)
+ 	{
++		if(this.field_143044_a == null)
++			throw new IllegalStateException();
+ 		p_76187_1_.setTag("Features", this.field_143044_a);
+ 	}
+ 
+ 	public void func_143043_a(NBTTagCompound p_143043_1_, int p_143043_2_, int p_143043_3_)
+ 	{
+-		this.field_143044_a.setTag(func_143042_b(p_143043_2_, p_143043_3_), p_143043_1_);
++		if(this.field_143044_a != null)
++			this.field_143044_a.setTag(func_143042_b(p_143043_2_, p_143043_3_), p_143043_1_);
+ 	}
+ 
+ 	public static String func_143042_b(int p_143042_0_, int p_143042_1_)
+@@ -37,4 +42,19 @@ public NBTTagCompound func_143041_a()
+ 	{
+ 		return this.field_143044_a;
+ 	}
++
++	/*======================================== ULTRAMINE START =====================================*/
++
++	private Map<Long, StructureStart> structureMap;
++
++	public void replaceNbtWithStrictureMap(Map<Long, StructureStart> structureMap)
++	{
++		this.structureMap = structureMap;
++		this.field_143044_a = null;
++	}
++
++	public Map<Long, StructureStart> getStructureMap()
++	{
++		return structureMap;
++	}
+ }
+\ No newline at end of file
+diff --git a/src/main/java/net/minecraft/world/gen/structure/StructureComponent.java b/src/main/java/net/minecraft/world/gen/structure/StructureComponent.java
+index df6ebf14..b1654da2 100644
+--- a/src/main/java/net/minecraft/world/gen/structure/StructureComponent.java
++++ b/src/main/java/net/minecraft/world/gen/structure/StructureComponent.java
+@@ -1,13 +1,17 @@
+ package net.minecraft.world.gen.structure;
+ 
++import java.io.IOException;
+ import java.util.Iterator;
+ import java.util.List;
++import java.util.Map;
+ import java.util.Random;
+ import net.minecraft.block.Block;
+ import net.minecraft.block.BlockDirectional;
+ import net.minecraft.block.material.Material;
+ import net.minecraft.init.Blocks;
+ import net.minecraft.item.ItemDoor;
++import net.minecraft.nbt.NBTBase;
++import net.minecraft.nbt.NBTOutputStream;
+ import net.minecraft.nbt.NBTTagCompound;
+ import net.minecraft.tileentity.TileEntityChest;
+ import net.minecraft.tileentity.TileEntityDispenser;
+@@ -811,4 +815,17 @@ public int getSelectedBlockMetaData()
+ 				return this.selectedBlockMetaData;
+ 			}
+ 		}
++
++	/*======================================== ULTRAMINE START =====================================*/
++
++	public void writeToNbtStream(NBTOutputStream out, NBTTagCompound bufferNbt) throws IOException
++	{
++		out.writeString("id", MapGenStructureIO.func_143036_a(this));
++		out.writeTag("BB", this.boundingBox.func_151535_h());
++		out.writeInt("O", this.coordBaseMode);
++		out.writeInt("GD", this.componentType);
++		this.func_143012_a(bufferNbt);
++		for(Map.Entry<String, NBTBase> ent : bufferNbt.geTagMap().entrySet())
++			out.writeTag(ent.getKey(), ent.getValue());
++	}
+ }
+\ No newline at end of file
+diff --git a/src/main/java/net/minecraft/world/gen/structure/StructureStart.java b/src/main/java/net/minecraft/world/gen/structure/StructureStart.java
+index 5c7f79bb..127f22b6 100644
+--- a/src/main/java/net/minecraft/world/gen/structure/StructureStart.java
++++ b/src/main/java/net/minecraft/world/gen/structure/StructureStart.java
+@@ -1,15 +1,18 @@
+ package net.minecraft.world.gen.structure;
+ 
++import java.util.ArrayList;
+ import java.util.Iterator;
+ import java.util.LinkedList;
+ import java.util.Random;
+ import net.minecraft.nbt.NBTTagCompound;
+ import net.minecraft.nbt.NBTTagList;
+ import net.minecraft.world.World;
++import org.ultramine.server.util.ListAsLinkedList;
+ 
+ public abstract class StructureStart
+ {
+-	protected LinkedList components = new LinkedList();
++	protected ArrayList<StructureComponent> componentsUm = new ArrayList<>();
++	protected LinkedList components = new ListAsLinkedList<>(componentsUm);
+ 	protected StructureBoundingBox boundingBox;
+ 	private int field_143024_c;
+ 	private int field_143023_d;
+@@ -71,7 +74,7 @@ public NBTTagCompound func_143021_a(int p_143021_1_, int p_143021_2_)
+ 		nbttagcompound.setInteger("ChunkX", p_143021_1_);
+ 		nbttagcompound.setInteger("ChunkZ", p_143021_2_);
+ 		nbttagcompound.setTag("BB", this.boundingBox.func_151535_h());
+-		NBTTagList nbttaglist = new NBTTagList();
++		NBTTagList nbttaglist = new NBTTagList(components.size());
+ 		Iterator iterator = this.components.iterator();
+ 
+ 		while (iterator.hasNext())
+@@ -99,11 +102,13 @@ public void func_143020_a(World p_143020_1_, NBTTagCompound p_143020_2_)
+ 
+ 		NBTTagList nbttaglist = p_143020_2_.getTagList("Children", 10);
+ 
++		componentsUm.ensureCapacity(nbttaglist.tagCount());
+ 		for (int i = 0; i < nbttaglist.tagCount(); ++i)
+ 		{
+ 			StructureComponent tmp = MapGenStructureIO.func_143032_b(nbttaglist.getCompoundTagAt(i), p_143020_1_);
+ 			if (tmp != null) this.components.add(tmp); //Forge: Prevent NPEs further down the line when a component can't be loaded.
+ 		}
++		componentsUm.trimToSize();
+ 
+ 		this.func_143017_b(p_143020_2_);
+ 	}
+diff --git a/src/main/java/net/minecraft/world/storage/MapStorage.java b/src/main/java/net/minecraft/world/storage/MapStorage.java
+index 29f32efb..ed6e9e6c 100644
+--- a/src/main/java/net/minecraft/world/storage/MapStorage.java
++++ b/src/main/java/net/minecraft/world/storage/MapStorage.java
+@@ -11,6 +11,8 @@
+ import java.util.List;
+ import java.util.Map;
+ 
++import net.minecraft.world.gen.structure.MapGenStructureData;
++import org.ultramine.server.internal.UMHooks;
+ import org.ultramine.server.util.AsyncIOUtils;
+ 
+ import net.minecraft.nbt.CompressedStreamTools;
+@@ -45,6 +47,7 @@ public WorldSavedData loadData(Class p_75742_1_, String p_75742_2_)
+ 		{
+ 			if (this.saveHandler != null)
+ 			{
++				boolean prevValue = p_75742_1_ == MapGenStructureData.class && NBTTagCompound.setUseKolobokeMap(true);
+ 				try
+ 				{
+ 					File file1 = this.saveHandler.getMapFileFromName(p_75742_2_);
+@@ -70,6 +73,11 @@ public WorldSavedData loadData(Class p_75742_1_, String p_75742_2_)
+ 				{
+ 					exception1.printStackTrace();
+ 				}
++				finally
++				{
++					if(p_75742_1_ == MapGenStructureData.class)
++						NBTTagCompound.setUseKolobokeMap(prevValue);
++				}
+ 			}
+ 
+ 			if (worldsaveddata != null)
+@@ -118,12 +126,19 @@ private void saveData(WorldSavedData p_75747_1_)
+ 	{
+ 		if (this.saveHandler != null)
+ 		{
++			boolean prevValue = NBTTagCompound.setUseKolobokeMap(true);
+ 			try
+ 			{
+ 				File file1 = this.saveHandler.getMapFileFromName(p_75747_1_.mapName);
+ 
+ 				if (file1 != null)
+ 				{
++					if(p_75747_1_ instanceof MapGenStructureData)
++					{
++						UMHooks.writeMapGenStructureData((MapGenStructureData) p_75747_1_, file1);
++						return;
++					}
++
+ 					NBTTagCompound nbttagcompound = new NBTTagCompound();
+ 					p_75747_1_.writeToNBT(nbttagcompound);
+ 					NBTTagCompound nbttagcompound1 = new NBTTagCompound();
+@@ -135,6 +150,10 @@ private void saveData(WorldSavedData p_75747_1_)
+ 			{
+ 				exception.printStackTrace();
+ 			}
++			finally
++			{
++				NBTTagCompound.setUseKolobokeMap(prevValue);
++			}
+ 		}
+ 	}
+ 
+diff --git a/src/main/java/org/ultramine/server/internal/UMHooks.java b/src/main/java/org/ultramine/server/internal/UMHooks.java
+index e942968d..afe2d2de 100644
+--- a/src/main/java/org/ultramine/server/internal/UMHooks.java
++++ b/src/main/java/org/ultramine/server/internal/UMHooks.java
+@@ -1,9 +1,16 @@
+ package org.ultramine.server.internal;
+ 
++import java.io.DataOutputStream;
++import java.io.File;
++import java.io.FileOutputStream;
++import java.io.IOException;
++import java.io.OutputStream;
+ import java.util.Arrays;
+ import java.util.List;
++import java.util.Map;
+ import java.util.UUID;
+ import java.util.zip.Deflater;
++import java.util.zip.GZIPOutputStream;
+ 
+ import cpw.mods.fml.common.FMLCommonHandler;
+ import cpw.mods.fml.common.registry.LanguageRegistry;
+@@ -12,6 +19,7 @@
+ import net.minecraft.entity.item.EntityItem;
+ import net.minecraft.entity.player.EntityPlayer;
+ import net.minecraft.entity.player.EntityPlayerMP;
++import net.minecraft.nbt.NBTOutputStream;
+ import net.minecraft.nbt.NBTTagCompound;
+ import net.minecraft.server.MinecraftServer;
+ import net.minecraft.tileentity.TileEntity;
+@@ -21,6 +29,11 @@
+ import net.minecraft.world.WorldServer;
+ import net.minecraft.world.chunk.Chunk;
+ import net.minecraft.world.chunk.storage.ExtendedBlockStorage;
++import net.minecraft.world.gen.structure.MapGenStructureData;
++import net.minecraft.world.gen.structure.StructureComponent;
++import net.minecraft.world.gen.structure.StructureMineshaftStart;
++import net.minecraft.world.gen.structure.StructureStart;
++import org.apache.commons.io.FileUtils;
+ import org.apache.logging.log4j.LogManager;
+ import org.apache.logging.log4j.Logger;
+ import org.ultramine.server.chunk.ChunkGenerationQueue;
+@@ -378,4 +391,80 @@ public ChunkPacketData(byte[] data, int length, int ebsMask)
+ 			this.ebsMask = ebsMask;
+ 		}
+ 	}
++
++	public static void writeMapGenStructureData(MapGenStructureData data, File file) throws IOException
++	{
++		org.apache.commons.io.output.ByteArrayOutputStream bout =  new org.apache.commons.io.output.ByteArrayOutputStream();
++		try(NBTOutputStream out = new NBTOutputStream(new DataOutputStream(bout))) {
++			out.startCompoundTag("data");
++			if(data.func_143041_a() != null)
++				out.writeTag("Features", data.func_143041_a());
++			else
++				writeStructureMap(data.getStructureMap(), out);
++			out.endCompoundTag();
++		}
++		GlobalExecutors.writingIO().execute(new Runnable()
++		{
++			@Override
++			public void run()
++			{
++				File tempFile = new File(file.getParentFile(), file.getName()+".tmp");
++				try {
++					try(OutputStream out = new GZIPOutputStream(new FileOutputStream(tempFile))) {
++						bout.writeTo(out);
++					}
++
++					if (file.exists())
++						FileUtils.forceDelete(file);
++					FileUtils.moveFile(tempFile, file);
++				} catch (Exception e) {
++					log.error("Failed to write file: "+file.getAbsolutePath(), e);
++				}
++			}
++		});
++	}
++
++	private static void writeStructureMap(Map<Long, StructureStart> structureMap, NBTOutputStream out) throws IOException
++	{
++		NBTTagCompound bufferNbt = null;
++		out.startCompoundTag("Features");
++		for(Map.Entry<Long, StructureStart> ent : structureMap.entrySet())
++		{
++			long key = ent.getKey();
++			StructureStart structure = ent.getValue();
++			int x = (int)(key & 0xFFFFFFFFL);
++			int z = (int)(key >> 32);
++			String tagName = MapGenStructureData.func_143042_b(x, z);
++			if(structure.getClass() == StructureMineshaftStart.class)
++			{
++				if(bufferNbt == null)
++					bufferNbt = new NBTTagCompound();
++				out.startCompoundTag(tagName);
++				{
++					out.writeString("id", "Mineshaft");
++					out.writeInt("ChunkX", x);
++					out.writeInt("ChunkZ", z);
++					out.writeTag("BB", structure.getBoundingBox().func_151535_h());
++					@SuppressWarnings("unchecked")
++					List<StructureComponent> components = structure.getComponents();
++					out.startTagList("Children", 10, components.size());
++					{
++						for(StructureComponent comp : components)
++						{
++							comp.writeToNbtStream(out, bufferNbt);
++							out.endCompoundTag();
++							bufferNbt.clear();
++						}
++					}
++					out.entTagList();
++				}
++				out.endCompoundTag();
++			}
++			else
++			{
++				out.writeTag(tagName, structure.func_143021_a(x, z));
++			}
++		}
++		out.endCompoundTag();
++	}
+ }
+diff --git a/src/main/java/org/ultramine/server/util/ListAsLinkedList.java b/src/main/java/org/ultramine/server/util/ListAsLinkedList.java
+new file mode 100644
+index 00000000..ac2d0841
+--- /dev/null
++++ b/src/main/java/org/ultramine/server/util/ListAsLinkedList.java
+@@ -0,0 +1,279 @@
++package org.ultramine.server.util;
++
++import java.util.Collection;
++import java.util.Comparator;
++import java.util.Iterator;
++import java.util.LinkedList;
++import java.util.List;
++import java.util.ListIterator;
++import java.util.NoSuchElementException;
++import java.util.RandomAccess;
++import java.util.Spliterator;
++import java.util.function.Consumer;
++import java.util.function.Predicate;
++import java.util.function.UnaryOperator;
++import java.util.stream.Stream;
++
++public class ListAsLinkedList<E> extends LinkedList<E> implements RandomAccess
++{
++	private final List<E> wrapped;
++
++	public ListAsLinkedList(List<E> wrapped)
++	{
++		this.wrapped = wrapped;
++	}
++
++	@Override
++	public int size()
++	{
++		return wrapped.size();
++	}
++
++	@Override
++	public boolean isEmpty()
++	{
++		return wrapped.isEmpty();
++	}
++
++	@Override
++	public boolean contains(Object o)
++	{
++		return wrapped.contains(o);
++	}
++
++	@Override
++	public Iterator<E> iterator()
++	{
++		return wrapped.iterator();
++	}
++
++	@Override
++	public Object[] toArray()
++	{
++		return wrapped.toArray();
++	}
++
++	@Override
++	public <T> T[] toArray(T[] a)
++	{
++		return wrapped.toArray(a);
++	}
++
++	@Override
++	public boolean add(E e)
++	{
++		return wrapped.add(e);
++	}
++
++	@Override
++	public boolean remove(Object o)
++	{
++		return wrapped.remove(o);
++	}
++
++	@Override
++	public boolean containsAll(Collection<?> c)
++	{
++		return wrapped.containsAll(c);
++	}
++
++	@Override
++	public boolean addAll(Collection<? extends E> c)
++	{
++		return wrapped.addAll(c);
++	}
++
++	@Override
++	public boolean addAll(int index, Collection<? extends E> c)
++	{
++		return wrapped.addAll(index, c);
++	}
++
++	@Override
++	public boolean removeAll(Collection<?> c)
++	{
++		return wrapped.removeAll(c);
++	}
++
++	@Override
++	public boolean retainAll(Collection<?> c)
++	{
++		return wrapped.retainAll(c);
++	}
++
++	@Override
++	public void replaceAll(UnaryOperator<E> operator)
++	{
++		wrapped.replaceAll(operator);
++	}
++
++	@Override
++	public void sort(Comparator<? super E> c)
++	{
++		wrapped.sort(c);
++	}
++
++	@Override
++	public void clear()
++	{
++		wrapped.clear();
++	}
++
++	@Override
++	public boolean equals(Object o)
++	{
++		return wrapped.equals(o);
++	}
++
++	@Override
++	public int hashCode()
++	{
++		return wrapped.hashCode();
++	}
++
++	@Override
++	public E get(int index)
++	{
++		return wrapped.get(index);
++	}
++
++	@Override
++	public E set(int index, E element)
++	{
++		return wrapped.set(index, element);
++	}
++
++	@Override
++	public void add(int index, E element)
++	{
++		wrapped.add(index, element);
++	}
++
++	@Override
++	public E remove(int index)
++	{
++		return wrapped.remove(index);
++	}
++
++	@Override
++	public int indexOf(Object o)
++	{
++		return wrapped.indexOf(o);
++	}
++
++	@Override
++	public int lastIndexOf(Object o)
++	{
++		return wrapped.lastIndexOf(o);
++	}
++
++	@Override
++	public ListIterator<E> listIterator()
++	{
++		return wrapped.listIterator();
++	}
++
++	@Override
++	public ListIterator<E> listIterator(int index)
++	{
++		return wrapped.listIterator(index);
++	}
++
++	@Override
++	public List<E> subList(int fromIndex, int toIndex)
++	{
++		return wrapped.subList(fromIndex, toIndex);
++	}
++
++	@Override
++	public Spliterator<E> spliterator()
++	{
++		return wrapped.spliterator();
++	}
++
++	@Override
++	public boolean removeIf(Predicate<? super E> filter)
++	{
++		return wrapped.removeIf(filter);
++	}
++
++	@Override
++	public Stream<E> stream()
++	{
++		return wrapped.stream();
++	}
++
++	@Override
++	public Stream<E> parallelStream()
++	{
++		return wrapped.parallelStream();
++	}
++
++	@Override
++	public void forEach(Consumer<? super E> action)
++	{
++		wrapped.forEach(action);
++	}
++
++	@Override
++	public E getFirst()
++	{
++		if(isEmpty())
++			throw new NoSuchElementException();
++		return get(0);
++	}
++
++	@Override
++	public E getLast()
++	{
++		if(isEmpty())
++			throw new NoSuchElementException();
++		return get(size() - 1);
++	}
++
++	@Override
++	public E removeFirst()
++	{
++		if(isEmpty())
++			throw new NoSuchElementException();
++		return remove(0);
++	}
++
++	@Override
++	public E removeLast()
++	{
++		if(isEmpty())
++			throw new NoSuchElementException();
++		return remove(size() - 1);
++	}
++
++	@Override
++	public void addFirst(E e)
++	{
++		add(0, e);
++	}
++
++	@Override
++	public void addLast(E e)
++	{
++		add(e);
++	}
++
++	@Override
++	public boolean removeFirstOccurrence(Object o)
++	{
++		return remove(o);
++	}
++
++	@Override
++	public boolean removeLastOccurrence(Object o)
++	{
++		int ind = lastIndexOf(o);
++		if(ind != -1)
++		{
++			remove(ind);
++			return true;
++		}
++		return false;
++	}
++}

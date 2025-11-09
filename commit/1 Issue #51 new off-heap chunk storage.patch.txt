@@ -1,0 +1,1739 @@
+From 5f8a83cff758953f3fb47a339397941c7ebb5193 Mon Sep 17 00:00:00 2001
+From: vlad20012 <beskvlad@yandex.ru>
+Date: Fri, 30 Sep 2016 23:51:31 +0300
+Subject: [PATCH] Issue #51 new off-heap chunk storage
+
+  - service-based implementation
+  - allocate memory on request an delayed release on chunk unload
+  - added experimental optional minecraft 1.8 chunk memory layout
+      (-Dorg.ultramine.chunk.alloc.layout=8)
+---
+ .../multiplayer/ChunkProviderClient.java      |   6 +-
+ .../net/minecraft/server/MinecraftServer.java |   2 +-
+ .../java/net/minecraft/world/chunk/Chunk.java |   8 +-
+ .../world/chunk/storage/AnvilChunkLoader.java |  19 +-
+ .../chunk/storage/ExtendedBlockStorage.java   |  62 +--
+ .../world/gen/ChunkProviderServer.java        |  12 +-
+ .../commands/basic/TechCommands.java          |  10 +-
+ .../server/UltramineServerModContainer.java   |   3 +
+ .../server/chunk/OffHeapChunkStorage.java     | 367 ------------------
+ .../server/chunk/alloc/ChunkAllocService.java |  18 +
+ .../ultramine/server/chunk/alloc/MemSlot.java | 175 +++++++++
+ .../alloc/unsafe/AbstractUnsafeMemSlot.java   | 105 +++++
+ .../chunk/alloc/unsafe/Unsafe7MemSlot.java    | 236 +++++++++++
+ .../chunk/alloc/unsafe/Unsafe8MemSlot.java    | 236 +++++++++++
+ .../chunk/alloc/unsafe/UnsafeChunkAlloc.java  | 110 ++++++
+ .../server/world/WorldDescriptor.java         |   2 +-
+ 16 files changed, 944 insertions(+), 427 deletions(-)
+ delete mode 100644 src/main/java/org/ultramine/server/chunk/OffHeapChunkStorage.java
+ create mode 100644 src/main/java/org/ultramine/server/chunk/alloc/ChunkAllocService.java
+ create mode 100644 src/main/java/org/ultramine/server/chunk/alloc/MemSlot.java
+ create mode 100644 src/main/java/org/ultramine/server/chunk/alloc/unsafe/AbstractUnsafeMemSlot.java
+ create mode 100644 src/main/java/org/ultramine/server/chunk/alloc/unsafe/Unsafe7MemSlot.java
+ create mode 100644 src/main/java/org/ultramine/server/chunk/alloc/unsafe/Unsafe8MemSlot.java
+ create mode 100644 src/main/java/org/ultramine/server/chunk/alloc/unsafe/UnsafeChunkAlloc.java
+
+diff --git a/src/main/java/net/minecraft/client/multiplayer/ChunkProviderClient.java b/src/main/java/net/minecraft/client/multiplayer/ChunkProviderClient.java
+index c77b97f6..12e39438 100644
+--- a/src/main/java/net/minecraft/client/multiplayer/ChunkProviderClient.java
++++ b/src/main/java/net/minecraft/client/multiplayer/ChunkProviderClient.java
+@@ -45,7 +45,7 @@ public void unloadChunk(int p_73234_1_, int p_73234_2_)
+ 		if (!chunk.isEmpty())
+ 		{
+ 			chunk.onChunkUnload();
+-			chunk.free();
++			chunk.release();
+ 		}
+ 
+ 		this.chunkMapping.remove(ChunkCoordIntPair.chunkXZ2Int(p_73234_1_, p_73234_2_));
+@@ -59,7 +59,7 @@ public Chunk loadChunk(int p_73158_1_, int p_73158_2_)
+ 		if(old != null)
+ 		{
+ 			old.onChunkUnload();
+-			old.free();
++			old.release();
+ 			chunkMapping.remove(key);
+ 			chunkListing.remove(old);
+ 		}
+@@ -135,7 +135,7 @@ public void recreateStructures(int p_82695_1_, int p_82695_2_) {}
+ 	public void free()
+ 	{
+ 		for(Object o : chunkListing)
+-			((Chunk)o).free();
++			((Chunk)o).release();
+ 		chunkListing.clear();
+ 	}
+ }
+\ No newline at end of file
+diff --git a/src/main/java/net/minecraft/server/MinecraftServer.java b/src/main/java/net/minecraft/server/MinecraftServer.java
+index 8a79c970..f8da082f 100644
+--- a/src/main/java/net/minecraft/server/MinecraftServer.java
++++ b/src/main/java/net/minecraft/server/MinecraftServer.java
+@@ -369,7 +369,7 @@ public void stopServer()
+ 				WorldServer[] tmp = worldServers;
+ 				for (WorldServer world : tmp)
+ 				{
+-					world.theChunkProviderServer.free();
++					world.theChunkProviderServer.release();
+ 					DimensionManager.setWorld(world.provider.dimensionId, null);
+ 				}
+ 			}
+diff --git a/src/main/java/net/minecraft/world/chunk/Chunk.java b/src/main/java/net/minecraft/world/chunk/Chunk.java
+index 01f1c50a..25375e32 100644
+--- a/src/main/java/net/minecraft/world/chunk/Chunk.java
++++ b/src/main/java/net/minecraft/world/chunk/Chunk.java
+@@ -1202,7 +1202,7 @@ public void fillChunk(byte[] p_76607_1_, int p_76607_2_, int p_76607_3_, boolean
+ 				{
+ 					this.storageArrays[l] = new ExtendedBlockStorage(l << 4, flag1, false);
+ 					if(!flag1)
+-						this.storageArrays[l].getSlot().clearSkylight();
++						this.storageArrays[l].getSlot().zerofillSkylight();
+ 				}
+ 
+ 				this.storageArrays[l].getSlot().setLSB(p_76607_1_, k);
+@@ -1211,7 +1211,7 @@ public void fillChunk(byte[] p_76607_1_, int p_76607_2_, int p_76607_3_, boolean
+ 			else if (p_76607_4_ && this.storageArrays[l] != null)
+ 			{
+ 				this.storageArrays[l] = null;
+-				this.storageArrays[l].free();
++				this.storageArrays[l].release();
+ 			}
+ 		}
+ 
+@@ -1836,12 +1836,12 @@ public int getEntityCountOfSameType(Entity e)
+ 		return getEntityCountByType(e.getEntityType());
+ 	}
+ 	
+-	public void free()
++	public void release()
+ 	{
+ 		for(ExtendedBlockStorage exbs : storageArrays)
+ 		{
+ 			if(exbs != null)
+-				exbs.free();
++				exbs.release();
+ 		}
+ 		releasePendingUpdatesSets();
+ 	}
+diff --git a/src/main/java/net/minecraft/world/chunk/storage/AnvilChunkLoader.java b/src/main/java/net/minecraft/world/chunk/storage/AnvilChunkLoader.java
+index 50c6bc99..8e09b102 100644
+--- a/src/main/java/net/minecraft/world/chunk/storage/AnvilChunkLoader.java
++++ b/src/main/java/net/minecraft/world/chunk/storage/AnvilChunkLoader.java
+@@ -20,7 +20,6 @@
+ import net.minecraft.world.MinecraftException;
+ import net.minecraft.world.World;
+ import net.minecraft.world.chunk.Chunk;
+-import net.minecraft.world.chunk.NibbleArray;
+ import net.minecraft.world.storage.IThreadedFileIO;
+ import net.minecraft.world.storage.ThreadedFileIOBase;
+ import net.minecraftforge.common.MinecraftForge;
+@@ -444,29 +443,33 @@ protected Chunk readChunkFromNBT(World par1World, NBTTagCompound par2NBTTagCompo
+ 			NBTTagCompound nbttagcompound1 = nbttaglist.getCompoundTagAt(k);
+ 			byte b1 = nbttagcompound1.getByte("Y");
+ 			ExtendedBlockStorage extendedblockstorage = new ExtendedBlockStorage(b1 << 4, flag, false);
+-			extendedblockstorage.getSlot().setLSB(nbttagcompound1.getByteArray("Blocks"));
++			byte[] lsb = nbttagcompound1.getByteArray("Blocks");
++			byte[] msb;
+ 
+ 			if (nbttagcompound1.hasKey("Add", 7))
+ 			{
+-				extendedblockstorage.getSlot().setMSB(nbttagcompound1.getByteArray("Add"));
++				msb = nbttagcompound1.getByteArray("Add");
+ 			}
+ 			else
+ 			{
+-				extendedblockstorage.getSlot().clearMSB();
++				msb = null;
+ 			}
+ 
+-			extendedblockstorage.getSlot().setBlockMetadata(nbttagcompound1.getByteArray("Data"));
+-			extendedblockstorage.getSlot().setBlocklight(nbttagcompound1.getByteArray("BlockLight"));
++			byte[] meta = nbttagcompound1.getByteArray("Data");
++			byte[] blockLight = nbttagcompound1.getByteArray("BlockLight");
++			byte[] skyLight;
+ 
+ 			if (flag)
+ 			{
+-				extendedblockstorage.getSlot().setSkylight(nbttagcompound1.getByteArray("SkyLight"));
++				skyLight = nbttagcompound1.getByteArray("SkyLight");
+ 			}
+ 			else
+ 			{
+-				extendedblockstorage.getSlot().clearSkylight();
++				skyLight = null;
+ 			}
+ 
++			extendedblockstorage.getSlot().setData(lsb, msb, meta, blockLight, skyLight);
++
+ 			extendedblockstorage.removeInvalidBlocks();
+ 			aextendedblockstorage[b1] = extendedblockstorage;
+ 		}
+diff --git a/src/main/java/net/minecraft/world/chunk/storage/ExtendedBlockStorage.java b/src/main/java/net/minecraft/world/chunk/storage/ExtendedBlockStorage.java
+index 7f5bec08..2756e865 100644
+--- a/src/main/java/net/minecraft/world/chunk/storage/ExtendedBlockStorage.java
++++ b/src/main/java/net/minecraft/world/chunk/storage/ExtendedBlockStorage.java
+@@ -2,28 +2,31 @@
+ 
+ import org.apache.logging.log4j.LogManager;
+ import org.apache.logging.log4j.Logger;
+-import org.ultramine.server.chunk.OffHeapChunkStorage;
++import org.ultramine.core.service.InjectService;
+ 
+ import cpw.mods.fml.relauncher.Side;
+ import cpw.mods.fml.relauncher.SideOnly;
+ import net.minecraft.block.Block;
+ import net.minecraft.init.Blocks;
+ import net.minecraft.world.chunk.NibbleArray;
++import org.ultramine.server.chunk.alloc.ChunkAllocService;
++import org.ultramine.server.chunk.alloc.MemSlot;
+ 
+ public class ExtendedBlockStorage
+ {
++	@InjectService private static ChunkAllocService alloc;
+ 	private int yBase;
+ 	private int blockRefCount;
+ 	private int tickRefCount;
+-	private OffHeapChunkStorage.MemSlot slot;
++	private volatile MemSlot slot; // volatile read is cheap on x86
+ 	private static final String __OBFID = "CL_00000375";
+ 
+-	public ExtendedBlockStorage(int p_i1997_1_, boolean p_i1997_2_, boolean clear)
++	public ExtendedBlockStorage(int p_i1997_1_, boolean p_i1997_2_, boolean zerofill)
+ 	{
+ 		this.yBase = p_i1997_1_;
+-		this.slot = OffHeapChunkStorage.instance().allocateSlot();
+-		if(clear)
+-			slot.clearAll();
++		this.slot = alloc.allocateSlot();
++		if(zerofill)
++			slot.zerofillAll();
+ 	}
+ 	
+ 	public ExtendedBlockStorage(int p_i1997_1_, boolean p_i1997_2_)
+@@ -31,14 +34,20 @@ public ExtendedBlockStorage(int p_i1997_1_, boolean p_i1997_2_)
+ 		this(p_i1997_1_, p_i1997_2_, true);
+ 	}
+ 
++	public ExtendedBlockStorage(int yBase, MemSlot slot)
++	{
++		this.yBase = yBase;
++		this.slot = slot;
++	}
++
+ 	public Block getBlockByExtId(int p_150819_1_, int p_150819_2_, int p_150819_3_)
+ 	{
+-		return Block.getBlockById(slot.getBlockID(p_150819_1_, p_150819_2_, p_150819_3_));
++		return Block.getBlockById(slot.getBlockId(p_150819_1_, p_150819_2_, p_150819_3_));
+ 	}
+ 
+ 	public void func_150818_a(int p_150818_1_, int p_150818_2_, int p_150818_3_, Block p_150818_4_)
+ 	{
+-		Block block1 = Block.getBlockById(slot.getBlockID(p_150818_1_, p_150818_2_, p_150818_3_));
++		Block block1 = Block.getBlockById(slot.getBlockId(p_150818_1_, p_150818_2_, p_150818_3_));
+ 
+ 		if (block1 != Blocks.air)
+ 		{
+@@ -61,7 +70,7 @@ public void func_150818_a(int p_150818_1_, int p_150818_2_, int p_150818_3_, Blo
+ 		}
+ 
+ 		int i1 = Block.getIdFromBlock(p_150818_4_);
+-		slot.setBlockID(p_150818_1_, p_150818_2_, p_150818_3_, i1);
++		slot.setBlockId(p_150818_1_, p_150818_2_, p_150818_3_, i1);
+ 	}
+ 
+ 	public int getExtBlockMetadata(int p_76665_1_, int p_76665_2_, int p_76665_3_)
+@@ -120,7 +129,8 @@ public void removeInvalidBlocks()
+ 			{
+ 				for (int k = 0; k < 16; ++k)
+ 				{
+-					Block block = this.getBlockByExtId(i, j, k);
++					// ultramine: replaced loop order from (x, y, z) to (y, z, x)
++					Block block = this.getBlockByExtId(k, i, j);
+ 
+ 					if (block != Blocks.air)
+ 					{
+@@ -146,7 +156,7 @@ public byte[] getBlockLSBArray()
+ 	@SideOnly(Side.CLIENT)
+ 	public void clearMSBArray()
+ 	{
+-		slot.clearMSB();
++		slot.zerofillMSB();
+ 	}
+ 
+ 	@Deprecated
+@@ -217,7 +227,7 @@ public void setSkylightArray(NibbleArray p_76666_1_)
+ 	public NibbleArray createBlockMSBArray()
+ 	{
+ 		logDeprecation();
+-		slot.clearMSB();
++		slot.zerofillMSB();
+ 		return getBlockMSBArray();
+ 	}
+ 
+@@ -228,31 +238,21 @@ private static void logDeprecation()
+ 		log.warn("Called deprecated method in ExtendedBlockStorage. It may have no effect intended by the modder or lead to performance issues", new Throwable());
+ 	}
+ 	
+-	public OffHeapChunkStorage.MemSlot getSlot()
++	public MemSlot getSlot()
+ 	{
+ 		return slot;
+ 	}
+-	
+-	public void free()
++
++	public ExtendedBlockStorage copy()
+ 	{
+-		slot.free();
+-		slot = null;
++		slot.getClass(); //NPE
++		return new ExtendedBlockStorage(yBase, slot.copy());
+ 	}
+ 	
+-	@Override
+-	protected void finalize()
++	public void release()
+ 	{
+-		try
+-		{
+-			if(slot != null)
+-			{
+-				slot.free();
+-				slot = null;
+-			}
+-		}
+-		catch(Throwable t)
+-		{
+-			t.printStackTrace();
+-		}
++		MemSlot slotLocal = this.slot;
++		this.slot = null;
++		slotLocal.release();
+ 	}
+ }
+\ No newline at end of file
+diff --git a/src/main/java/net/minecraft/world/gen/ChunkProviderServer.java b/src/main/java/net/minecraft/world/gen/ChunkProviderServer.java
+index c253e4c4..93967d34 100644
+--- a/src/main/java/net/minecraft/world/gen/ChunkProviderServer.java
++++ b/src/main/java/net/minecraft/world/gen/ChunkProviderServer.java
+@@ -3,7 +3,6 @@
+ import java.io.IOException;
+ import java.util.AbstractList;
+ import java.util.ArrayList;
+-import java.util.HashSet;
+ import java.util.Iterator;
+ import java.util.List;
+ import java.util.Set;
+@@ -16,7 +15,6 @@
+ import net.minecraft.crash.CrashReportCategory;
+ import net.minecraft.entity.EnumCreatureType;
+ import net.minecraft.nbt.NBTTagCompound;
+-import net.minecraft.util.ChunkCoordinates;
+ import net.minecraft.util.IProgressUpdate;
+ import net.minecraft.util.LongHashMap;
+ import net.minecraft.util.ReportedException;
+@@ -30,8 +28,6 @@
+ import net.minecraft.world.chunk.IChunkProvider;
+ import net.minecraft.world.chunk.storage.AnvilChunkLoader;
+ import net.minecraft.world.chunk.storage.IChunkLoader;
+-import net.minecraftforge.common.DimensionManager;
+-import net.minecraftforge.common.ForgeChunkManager;
+ import net.minecraftforge.common.MinecraftForge;
+ import net.minecraftforge.common.chunkio.ChunkIOExecutor;
+ import net.minecraftforge.event.world.ChunkDataEvent;
+@@ -417,7 +413,7 @@ public boolean unloadQueuedChunks()
+ 						}
+ 						this.safeSaveExtraChunkData(chunk);
+ 						this.chunkMap.remove(hash);
+-						chunk.free();
++						chunk.release();
+ 					}
+ 				}
+ 				
+@@ -655,7 +651,7 @@ public void unloadAll(boolean save)
+ 				safeSaveChunk(chunk);
+ 			else
+ 				MinecraftForge.EVENT_BUS.post(new ChunkDataEvent.Save(chunk, new NBTTagCompound())); //CodeChickenLib memory leak fix
+-			chunk.free();
++			chunk.release();
+ 		}
+ 		
+ 		chunkMap.clear();
+@@ -665,10 +661,10 @@ public void unloadAll(boolean save)
+ 			((AnvilChunkLoader)currentChunkLoader).unsafeRemoveAll();
+ 	}
+ 	
+-	public void free()
++	public void release()
+ 	{
+ 		for(Chunk chunk : chunkMap.valueCollection())
+-			chunk.free();
++			chunk.release();
+ 		chunkMap.clear();
+ 		setWorldUnloaded();
+ 	}
+diff --git a/src/main/java/org/ultramine/commands/basic/TechCommands.java b/src/main/java/org/ultramine/commands/basic/TechCommands.java
+index a573f261..1d70c0f2 100644
+--- a/src/main/java/org/ultramine/commands/basic/TechCommands.java
++++ b/src/main/java/org/ultramine/commands/basic/TechCommands.java
+@@ -28,6 +28,7 @@
+ import org.apache.logging.log4j.Logger;
+ import org.ultramine.commands.Command;
+ import org.ultramine.commands.CommandContext;
++import org.ultramine.core.service.InjectService;
+ import org.ultramine.server.BackupManager;
+ import org.ultramine.server.ConfigurationHandler;
+ import org.ultramine.server.Restarter;
+@@ -38,7 +39,7 @@
+ import org.ultramine.server.WorldsConfig.WorldConfig;
+ import org.ultramine.server.WorldsConfig.WorldConfig.ImportFrom;
+ import org.ultramine.server.chunk.ChunkProfiler;
+-import org.ultramine.server.chunk.OffHeapChunkStorage;
++import org.ultramine.server.chunk.alloc.ChunkAllocService;
+ import org.ultramine.server.util.BasicTypeParser;
+ import org.ultramine.server.world.MultiWorld;
+ import org.ultramine.server.world.WorldDescriptor;
+@@ -58,7 +59,8 @@
+ public class TechCommands
+ {
+ 	private static final Logger log = LogManager.getLogger();
+-	
++	@InjectService private static ChunkAllocService alloc;
++
+ 	@Command(
+ 			name = "id",
+ 			group = "technical",
+@@ -155,8 +157,8 @@ public static void memstat(CommandContext ctx)
+ 		ctx.sendMessage("Heap max: %sm", Runtime.getRuntime().maxMemory() >> 20);
+ 		ctx.sendMessage("Heap total: %sm", Runtime.getRuntime().totalMemory() >> 20);
+ 		ctx.sendMessage("Heap free: %sm", Runtime.getRuntime().freeMemory() >> 20);
+-		ctx.sendMessage("Off-Heap chunk total: %sm", OffHeapChunkStorage.instance().getTotalMemory() >> 20);
+-		ctx.sendMessage("Off-Heap chunk used: %sm", OffHeapChunkStorage.instance().getUsedMemory() >> 20);
++		ctx.sendMessage("Off-Heap chunk total: %sm", alloc.getOffHeapTotalMemory() >> 20);
++		ctx.sendMessage("Off-Heap chunk used: %sm", alloc.getOffHeapUsedMemory() >> 20);
+ 		ctx.sendMessage("Threads: %s", Thread.activeCount());
+ 	}
+ 	
+diff --git a/src/main/java/org/ultramine/server/UltramineServerModContainer.java b/src/main/java/org/ultramine/server/UltramineServerModContainer.java
+index 9aebabef..605784e9 100644
+--- a/src/main/java/org/ultramine/server/UltramineServerModContainer.java
++++ b/src/main/java/org/ultramine/server/UltramineServerModContainer.java
+@@ -23,6 +23,8 @@
+ import org.ultramine.core.service.ServiceManager;
+ import org.ultramine.server.chunk.ChunkGenerationQueue;
+ import org.ultramine.server.chunk.ChunkProfiler;
++import org.ultramine.server.chunk.alloc.ChunkAllocService;
++import org.ultramine.server.chunk.alloc.unsafe.UnsafeChunkAlloc;
+ import org.ultramine.server.data.Databases;
+ import org.ultramine.server.data.ServerDataLoader;
+ import org.ultramine.server.data.player.PlayerCoreData;
+@@ -108,6 +110,7 @@ public void preInit(FMLPreInitializationEvent e)
+ 	{
+ 		try
+ 		{
++			services.register(ChunkAllocService.class, new UnsafeChunkAlloc(), 0);
+ 			if(e.getSide().isServer())
+ 			{
+ 				ConfigurationHandler.load();
+diff --git a/src/main/java/org/ultramine/server/chunk/OffHeapChunkStorage.java b/src/main/java/org/ultramine/server/chunk/OffHeapChunkStorage.java
+deleted file mode 100644
+index 9b7323a8..00000000
+--- a/src/main/java/org/ultramine/server/chunk/OffHeapChunkStorage.java
++++ /dev/null
+@@ -1,367 +0,0 @@
+-package org.ultramine.server.chunk;
+-
+-import java.util.ArrayList;
+-import java.util.List;
+-
+-import org.ultramine.server.util.UnsafeUtil;
+-
+-import cpw.mods.fml.common.FMLCommonHandler;
+-import sun.misc.Unsafe;
+-
+-public class OffHeapChunkStorage
+-{
+-	private static final boolean IS_CLIENT = FMLCommonHandler.instance().getSide().isClient();
+-	static final Unsafe U = UnsafeUtil.getUnsafe();
+-	private static final int SLOT_SIZE = 4096*3;
+-	private static final int SLOTS_PER_CHUNK = IS_CLIENT ? 8*512 : 8*2048;
+-	private static final int SLOT_LIMIT = ((int)Math.round(Integer.parseInt(System.getProperty("org.ultramine.server.offheapchunk.memlimit", "6"))*5.3333333333d))*(8*2048);
+-	
+-	private int counter = -1;
+-	private final List<MemSlot> freeSlots = new ArrayList<MemSlot>();
+-	
+-	private MemChunk chunk;
+-	private int slots;
+-	
+-	private static final OffHeapChunkStorage INSTANCE = new OffHeapChunkStorage();
+-	public static OffHeapChunkStorage instance()
+-	{
+-		return INSTANCE;
+-	}
+-	
+-	private OffHeapChunkStorage()
+-	{
+-		slots = SLOTS_PER_CHUNK;
+-		chunk = new MemChunk();
+-	}
+-	
+-	public synchronized MemSlot allocateSlot()
+-	{
+-		if(freeSlots.size() != 0)
+-		{
+-			return freeSlots.remove(freeSlots.size()-1);
+-		}
+-		else
+-		{
+-			if(++counter == slots)
+-			{
+-				if(counter >= SLOT_LIMIT)
+-					throw new OutOfMemoryError("Off-heap chunk storage");
+-				slots += SLOTS_PER_CHUNK;
+-				chunk = new MemChunk();
+-			}
+-			
+-			return new MemSlot(chunk.nextSlot());
+-		}
+-	}
+-	
+-	public long getTotalMemory()
+-	{
+-		return (long)slots*SLOT_SIZE;
+-	}
+-	
+-	public long getUsedMemory()
+-	{
+-		return ((long)counter+1-freeSlots.size())*SLOT_SIZE;
+-	}
+-	
+-	private static class MemChunk
+-	{
+-		private int counter;
+-		private long pointer;
+-		
+-		public MemChunk()
+-		{
+-			pointer = U.allocateMemory(SLOT_SIZE * SLOTS_PER_CHUNK);
+-		}
+-		
+-		public long nextSlot()
+-		{
+-			return pointer + (counter++)*SLOT_SIZE;
+-		}
+-	}
+-	
+-	//LSB
+-	//MSB#META
+-	//BLOCK#SKY
+-	public static class MemSlot
+-	{
+-		private static final long BYTE_ARRAY_OFFSET = U.arrayBaseOffset(byte[].class);
+-		private static final int OFFSET_LSB		= 0;
+-		private static final int OFFSET_MSB		= 4096;
+-		private static final int OFFSET_META	= 4096+2048;
+-		private static final int OFFSET_BLOCK	= 4096+2048+2048;
+-		private static final int OFFSET_SKY		= 4096+2048+2048+2048;
+-		
+-		private final long pointer;
+-		
+-		private MemSlot(long pointer)
+-		{
+-			this.pointer = pointer;
+-		}
+-		
+-		private void setByte(int ind, byte data)
+-		{
+-			U.putByte(pointer + ind, data);
+-		}
+-		
+-		private byte getByte(int ind)
+-		{
+-			return U.getByte(pointer + ind);
+-		}
+-		
+-		//raw set
+-		
+-		public void setLSB(byte[] arr)
+-		{
+-			if(arr == null || arr.length != 4096) throw new IllegalArgumentException();
+-			U.copyMemory(arr, BYTE_ARRAY_OFFSET, null, pointer, 4096);
+-		}
+-		
+-		public void setLSB(byte[] arr, int start)
+-		{
+-			if(arr == null || arr.length - start < 4096) throw new IllegalArgumentException();
+-			U.copyMemory(arr, BYTE_ARRAY_OFFSET + start, null, pointer, 4096);
+-		}
+-		
+-		public void setMSB(byte[] arr)
+-		{
+-			if(arr == null || arr.length != 2048) throw new IllegalArgumentException();
+-			U.copyMemory(arr, BYTE_ARRAY_OFFSET, null, pointer + OFFSET_MSB, 2048);
+-		}
+-		
+-		public void setMSB(byte[] arr, int start)
+-		{
+-			if(arr == null || arr.length - start < 2048) throw new IllegalArgumentException();
+-			U.copyMemory(arr, BYTE_ARRAY_OFFSET + start, null, pointer + OFFSET_MSB, 2048);
+-		}
+-		
+-		public void setBlockMetadata(byte[] arr)
+-		{
+-			if(arr == null || arr.length != 2048) throw new IllegalArgumentException();
+-			U.copyMemory(arr, BYTE_ARRAY_OFFSET, null, pointer + OFFSET_META, 2048);
+-		}
+-		
+-		public void setBlockMetadata(byte[] arr, int start)
+-		{
+-			if(arr == null || arr.length - start < 2048) throw new IllegalArgumentException();
+-			U.copyMemory(arr, BYTE_ARRAY_OFFSET + start, null, pointer + OFFSET_META, 2048);
+-		}
+-		
+-		public void setBlocklight(byte[] arr)
+-		{
+-			if(arr == null || arr.length != 2048) throw new IllegalArgumentException();
+-			U.copyMemory(arr, BYTE_ARRAY_OFFSET, null, pointer + OFFSET_BLOCK, 2048);
+-		}
+-		
+-		public void setBlocklight(byte[] arr, int start)
+-		{
+-			if(arr == null || arr.length - start < 2048) throw new IllegalArgumentException();
+-			U.copyMemory(arr, BYTE_ARRAY_OFFSET + start, null, pointer + OFFSET_BLOCK, 2048);
+-		}
+-		
+-		public void setSkylight(byte[] arr)
+-		{
+-			if(arr == null || arr.length != 2048) throw new IllegalArgumentException();
+-			U.copyMemory(arr, BYTE_ARRAY_OFFSET, null, pointer + OFFSET_SKY, 2048);
+-		}
+-		
+-		public void setSkylight(byte[] arr, int start)
+-		{
+-			if(arr == null || arr.length - start < 2048) throw new IllegalArgumentException();
+-			U.copyMemory(arr, BYTE_ARRAY_OFFSET + start, null, pointer + OFFSET_SKY, 2048);
+-		}
+-		
+-		//raw copy
+-		
+-		public void copyLSB(byte[] arr)
+-		{
+-			if(arr == null || arr.length != 4096) throw new IllegalArgumentException();
+-			U.copyMemory(null, pointer, arr, BYTE_ARRAY_OFFSET, 4096);
+-		}
+-		
+-		public void copyLSB(byte[] arr, int start)
+-		{
+-			if(arr == null || arr.length - start < 4096) throw new IllegalArgumentException();
+-			U.copyMemory(null, pointer, arr, BYTE_ARRAY_OFFSET + start, 4096);
+-		}
+-		
+-		public void copyMSB(byte[] arr)
+-		{
+-			if(arr == null || arr.length != 2048) throw new IllegalArgumentException();
+-			U.copyMemory(null, pointer + OFFSET_MSB, arr, BYTE_ARRAY_OFFSET, 2048);
+-		}
+-		
+-		public void copyMSB(byte[] arr, int start)
+-		{
+-			if(arr == null || arr.length - start < 2048) throw new IllegalArgumentException();
+-			U.copyMemory(null, pointer + OFFSET_MSB, arr, BYTE_ARRAY_OFFSET + start, 2048);
+-		}
+-		
+-		public void copyBlockMetadata(byte[] arr)
+-		{
+-			if(arr == null || arr.length != 2048) throw new IllegalArgumentException();
+-			U.copyMemory(null, pointer + OFFSET_META, arr, BYTE_ARRAY_OFFSET, 2048);
+-		}
+-		
+-		public void copyBlockMetadata(byte[] arr, int start)
+-		{
+-			if(arr == null || arr.length - start < 2048) throw new IllegalArgumentException();
+-			U.copyMemory(null, pointer + OFFSET_META, arr, BYTE_ARRAY_OFFSET + start, 2048);
+-		}
+-		
+-		public void copyBlocklight(byte[] arr)
+-		{
+-			if(arr == null || arr.length != 2048) throw new IllegalArgumentException();
+-			U.copyMemory(null, pointer + OFFSET_BLOCK, arr, BYTE_ARRAY_OFFSET, 2048);
+-		}
+-		
+-		public void copyBlocklight(byte[] arr, int start)
+-		{
+-			if(arr == null || arr.length - start < 2048) throw new IllegalArgumentException();
+-			U.copyMemory(null, pointer + OFFSET_BLOCK, arr, BYTE_ARRAY_OFFSET + start, 2048);
+-		}
+-		
+-		public void copySkylight(byte[] arr)
+-		{
+-			if(arr == null || arr.length != 2048) throw new IllegalArgumentException();
+-			U.copyMemory(null, pointer + OFFSET_SKY, arr, BYTE_ARRAY_OFFSET, 2048);
+-		}
+-		
+-		public void copySkylight(byte[] arr, int start)
+-		{
+-			if(arr == null || arr.length - start < 2048) throw new IllegalArgumentException();
+-			U.copyMemory(null, pointer + OFFSET_SKY, arr, BYTE_ARRAY_OFFSET + start, 2048);
+-		}
+-		
+-		//array copy
+-		
+-		public byte[] copyLSB()
+-		{
+-			byte[] arr = new byte[4096];
+-			copyLSB(arr);
+-			return arr;
+-		}
+-		
+-		public byte[] copyMSB()
+-		{
+-			byte[] arr = new byte[2048];
+-			copyMSB(arr);
+-			return arr;
+-		}
+-		
+-		public byte[] copyBlockMetadata()
+-		{
+-			byte[] arr = new byte[2048];
+-			copyBlockMetadata(arr);
+-			return arr;
+-		}
+-		
+-		public byte[] copyBlocklight()
+-		{
+-			byte[] arr = new byte[2048];
+-			copyBlocklight(arr);
+-			return arr;
+-		}
+-		
+-		public byte[] copySkylight()
+-		{
+-			byte[] arr = new byte[2048];
+-			copySkylight(arr);
+-			return arr;
+-		}
+-		
+-		//clear
+-		
+-		public void clearMSB()
+-		{
+-			U.setMemory(pointer + OFFSET_MSB, 2048, (byte)0);
+-		}
+-		
+-		public void clearSkylight()
+-		{
+-			U.setMemory(pointer + OFFSET_SKY, 2048, (byte)0);
+-		}
+-		
+-		public void clearAll()
+-		{
+-			U.setMemory(pointer, SLOT_SIZE, (byte)0);
+-		}
+-		
+-		//
+-		
+-		private int get4bits(int start, int x, int y, int z)
+-		{
+-			int l = y << 8 | z << 4 | x;
+-			int i1 = l >> 1;
+-			int j1 = l & 1;
+-			return j1 == 0 ? getByte(start+i1) & 15 : getByte(start+i1) >> 4 & 15;
+-		}
+-		
+-		private void set4bits(int start, int x, int y, int z, int data)
+-		{
+-			int i1 = y << 8 | z << 4 | x;
+-			int j1 = i1 >> 1;
+-			int k1 = i1 & 1;
+-
+-			int off = start+j1;
+-			if (k1 == 0)
+-			{
+-				setByte(off, (byte)(getByte(off) & 240 | data & 15));
+-			}
+-			else
+-			{
+-				setByte(off, (byte)(getByte(off) & 15 | (data & 15) << 4));
+-			}
+-		}
+-		
+-		public int getBlockID(int x, int y, int z)
+-		{
+-			return (getByte(y << 8 | z << 4 | x) & 255) | (get4bits(OFFSET_MSB, x, y, z) << 8);
+-		}
+-		
+-		public void setBlockID(int x, int y, int z, int id)
+-		{
+-			setByte(y << 8 | z << 4 | x, (byte)(id & 0xFF));
+-			set4bits(OFFSET_MSB, x, y, z, (id & 3840) >> 8);
+-		}
+-		
+-		public int getMeta(int x, int y, int z)
+-		{
+-			return get4bits(OFFSET_META, x, y, z);
+-		}
+-		
+-		public void setMeta(int x, int y, int z, int meta)
+-		{
+-			set4bits(OFFSET_META, x, y, z, meta);
+-		}
+-		
+-		public int getBlocklight(int x, int y, int z)
+-		{
+-			return get4bits(OFFSET_BLOCK, x, y, z);
+-		}
+-		
+-		public void setBlocklight(int x, int y, int z, int val)
+-		{
+-			set4bits(OFFSET_BLOCK, x, y, z, val);
+-		}
+-		
+-		public int getSkylight(int x, int y, int z)
+-		{
+-			return get4bits(OFFSET_SKY, x, y, z);
+-		}
+-		
+-		public void setSkylight(int x, int y, int z, int val)
+-		{
+-			set4bits(OFFSET_SKY, x, y, z, val);
+-		}
+-		
+-		public void free()
+-		{
+-			OffHeapChunkStorage inst = OffHeapChunkStorage.instance();
+-			synchronized(inst)
+-			{
+-				inst.freeSlots.add(this);
+-			}
+-		}
+-	}
+-}
+diff --git a/src/main/java/org/ultramine/server/chunk/alloc/ChunkAllocService.java b/src/main/java/org/ultramine/server/chunk/alloc/ChunkAllocService.java
+new file mode 100644
+index 00000000..778c13db
+--- /dev/null
++++ b/src/main/java/org/ultramine/server/chunk/alloc/ChunkAllocService.java
+@@ -0,0 +1,18 @@
++package org.ultramine.server.chunk.alloc;
++
++import org.ultramine.core.service.Service;
++
++import javax.annotation.Nonnull;
++import javax.annotation.concurrent.ThreadSafe;
++
++@ThreadSafe
++@Service(singleProvider = true)
++public interface ChunkAllocService
++{
++	@Nonnull
++	MemSlot allocateSlot();
++
++	long getOffHeapTotalMemory();
++
++	long getOffHeapUsedMemory();
++}
+diff --git a/src/main/java/org/ultramine/server/chunk/alloc/MemSlot.java b/src/main/java/org/ultramine/server/chunk/alloc/MemSlot.java
+new file mode 100644
+index 00000000..6281324d
+--- /dev/null
++++ b/src/main/java/org/ultramine/server/chunk/alloc/MemSlot.java
+@@ -0,0 +1,175 @@
++package org.ultramine.server.chunk.alloc;
++
++import javax.annotation.Nonnull;
++import javax.annotation.Nullable;
++
++public interface MemSlot
++{
++	default void setLSB(byte[] arr)
++	{
++		setLSB(arr, 0);
++	}
++
++	void setLSB(byte[] arr, int start);
++
++	default void setMSB(byte[] arr)
++	{
++		setMSB(arr, 0);
++	}
++
++	void setMSB(byte[] arr, int start);
++
++	default void setData(@Nonnull byte[] lsb, @Nullable byte[] msb, @Nonnull byte[] meta, @Nonnull byte[] blockLight, @Nullable byte[] skyLight)
++	{
++		setLSB(lsb);
++		if(msb != null)
++			setMSB(msb);
++		else
++			zerofillMSB();
++		setBlockMetadata(meta);
++		setBlocklight(blockLight);
++		if(skyLight != null)
++			setSkylight(skyLight);
++		else
++			zerofillSkylight();
++	}
++
++	default void setBlockMetadata(byte[] arr)
++	{
++		setBlockMetadata(arr, 0);
++	}
++
++	void setBlockMetadata(byte[] arr, int start);
++
++	default void setBlocklight(byte[] arr)
++	{
++		setBlocklight(arr, 0);
++	}
++
++	void setBlocklight(byte[] arr, int start);
++
++	default void setSkylight(byte[] arr)
++	{
++		setSkylight(arr, 0);
++	}
++
++	void setSkylight(byte[] arr, int start);
++
++	default void copyLSB(byte[] arr)
++	{
++		copyLSB(arr, 0);
++	}
++
++	void copyLSB(byte[] arr, int start);
++
++	default void copyMSB(byte[] arr)
++	{
++		copyMSB(arr, 0);
++	}
++
++	void copyMSB(byte[] arr, int start);
++
++	default void copyBlockMetadata(byte[] arr)
++	{
++		copyBlockMetadata(arr, 0);
++	}
++
++	void copyBlockMetadata(byte[] arr, int start);
++
++	default void copyBlocklight(byte[] arr)
++	{
++		copyBlocklight(arr, 0);
++	}
++
++	void copyBlocklight(byte[] arr, int start);
++
++	default void copySkylight(byte[] arr)
++	{
++		copySkylight(arr, 0);
++	}
++
++	void copySkylight(byte[] arr, int start);
++
++	default byte[] copyLSB()
++	{
++		byte[] arr = new byte[4096];
++		copyLSB(arr);
++		return arr;
++	}
++
++	default byte[] copyMSB()
++	{
++		byte[] arr = new byte[2048];
++		copyMSB(arr);
++		return arr;
++	}
++
++	default byte[] copyBlockMetadata()
++	{
++		byte[] arr = new byte[2048];
++		copyBlockMetadata(arr);
++		return arr;
++	}
++
++	default byte[] copyBlocklight()
++	{
++		byte[] arr = new byte[2048];
++		copyBlocklight(arr);
++		return arr;
++	}
++
++	default byte[] copySkylight()
++	{
++		byte[] arr = new byte[2048];
++		copySkylight(arr);
++		return arr;
++	}
++
++	void zerofillMSB();
++
++	void zerofillSkylight();
++
++	void zerofillAll();
++
++	int getBlockId(int x, int y, int z);
++
++	void setBlockId(int x, int y, int z, int id);
++
++	int getMeta(int x, int y, int z);
++
++	void setMeta(int x, int y, int z, int meta);
++
++	default void setBlockIdAndMeta(int x, int y, int z, int id, int meta)
++	{
++		setBlockId(x, y, z, id);
++		setMeta(x, y, z, meta);
++	}
++
++	default int getBlockIdAndMeta(int x, int y, int z)
++	{
++		return getBlockId(x, y, z) | (getMeta(x, y, z) << 12);
++	}
++
++	int getBlocklight(int x, int y, int z);
++
++	void setBlocklight(int x, int y, int z, int val);
++
++	int getSkylight(int x, int y, int z);
++
++	void setSkylight(int x, int y, int z, int val);
++
++	@Nonnull
++	ChunkAllocService getAlloc();
++
++	void copyFrom(@Nonnull MemSlot src);
++
++	@Nonnull
++	default MemSlot copy()
++	{
++		MemSlot other = getAlloc().allocateSlot();
++		other.copyFrom(this);
++		return other;
++	}
++
++	void release();
++}
+diff --git a/src/main/java/org/ultramine/server/chunk/alloc/unsafe/AbstractUnsafeMemSlot.java b/src/main/java/org/ultramine/server/chunk/alloc/unsafe/AbstractUnsafeMemSlot.java
+new file mode 100644
+index 00000000..5700ea30
+--- /dev/null
++++ b/src/main/java/org/ultramine/server/chunk/alloc/unsafe/AbstractUnsafeMemSlot.java
+@@ -0,0 +1,105 @@
++package org.ultramine.server.chunk.alloc.unsafe;
++
++import org.ultramine.server.chunk.alloc.ChunkAllocService;
++import org.ultramine.server.chunk.alloc.MemSlot;
++import org.ultramine.server.util.UnsafeUtil;
++import sun.misc.Unsafe;
++
++abstract class AbstractUnsafeMemSlot implements MemSlot
++{
++	static final int SLOT_SIZE = 4096*3;
++	protected static final Unsafe U = UnsafeUtil.getUnsafe();
++
++	protected final UnsafeChunkAlloc alloc;
++	protected final long pointer;
++	private boolean isReleased;
++
++	AbstractUnsafeMemSlot(UnsafeChunkAlloc alloc, long pointer)
++	{
++		this.alloc = alloc;
++		this.pointer = pointer;
++	}
++
++	@Override
++	public ChunkAllocService getAlloc()
++	{
++		return alloc;
++	}
++
++	public final long getPointer()
++	{
++		return pointer;
++	}
++
++	@Override
++	public void copyFrom(MemSlot src)
++	{
++		if(getClass() != src.getClass())
++			throw new IllegalStateException();
++		if(isReleased)
++			throw new IllegalStateException("Destination slot already released");
++		if(((AbstractUnsafeMemSlot)src).isReleased)
++			throw new IllegalStateException("Source slot already released");
++		U.copyMemory(((AbstractUnsafeMemSlot)src).getPointer(), pointer, SLOT_SIZE);
++	}
++
++	@Override
++	public void release()
++	{
++		if(isReleased)
++			throw new IllegalStateException("Slot already released");
++		alloc.releaseSlot(pointer);
++		isReleased = true;
++	}
++
++	protected final void setByte(int ind, byte data)
++	{
++		U.putByte(pointer + ind, data);
++	}
++
++	protected final byte getByte(int ind)
++	{
++		return U.getByte(pointer + ind);
++	}
++
++	protected final void setChar(int ind, char data)
++	{
++		U.putChar(pointer + ind, data);
++	}
++
++	protected final char getChar(int ind)
++	{
++		return U.getChar(pointer + ind);
++	}
++
++	protected final int get4bits(int start, int x, int y, int z)
++	{
++		int ind = y << 8 | z << 4 | x;
++		byte data = getByte(start + (ind >> 1));
++		return (ind & 1) == 0 ? data & 15 : data >> 4 & 15;
++	}
++
++	protected final void set4bits(int start, int x, int y, int z, int data)
++	{
++		int ind = y << 8 | z << 4 | x;
++		int off = start + (ind >> 1);
++		if ((ind & 1) == 0)
++			setByte(off, (byte)(getByte(off) & 240 | data & 15));
++		else
++			setByte(off, (byte)(getByte(off) & 15 | (data & 15) << 4));
++	}
++
++	@Override
++	protected void finalize()
++	{
++		try
++		{
++			if(!isReleased)
++				release();
++		}
++		catch(Throwable t)
++		{
++			t.printStackTrace();
++		}
++	}
++}
+diff --git a/src/main/java/org/ultramine/server/chunk/alloc/unsafe/Unsafe7MemSlot.java b/src/main/java/org/ultramine/server/chunk/alloc/unsafe/Unsafe7MemSlot.java
+new file mode 100644
+index 00000000..b450db21
+--- /dev/null
++++ b/src/main/java/org/ultramine/server/chunk/alloc/unsafe/Unsafe7MemSlot.java
+@@ -0,0 +1,236 @@
++package org.ultramine.server.chunk.alloc.unsafe;
++
++import sun.misc.Unsafe;
++
++//LSB
++//MSB#META
++//BLOCK#SKY
++public final class Unsafe7MemSlot extends AbstractUnsafeMemSlot
++{
++	private static final long BYTE_ARRAY_OFFSET = Unsafe.ARRAY_BYTE_BASE_OFFSET;
++	private static final int OFFSET_LSB			= 0;
++	private static final int OFFSET_MSB			= 4096;
++	private static final int OFFSET_META		= 4096+2048;
++	private static final int OFFSET_BLOCK_LIGHT = 4096+2048+2048;
++	private static final int OFFSET_SKY_LIGHT	= 4096+2048+2048+2048;
++
++	Unsafe7MemSlot(UnsafeChunkAlloc alloc, long pointer)
++	{
++		super(alloc, pointer);
++	}
++
++	//raw set
++
++	@Override
++	public void setLSB(byte[] arr)
++	{
++		if(arr == null || arr.length != 4096) throw new IllegalArgumentException();
++		U.copyMemory(arr, BYTE_ARRAY_OFFSET, null, pointer, 4096);
++	}
++
++	@Override
++	public void setLSB(byte[] arr, int start)
++	{
++		if(arr == null || arr.length - start < 4096) throw new IllegalArgumentException();
++		U.copyMemory(arr, BYTE_ARRAY_OFFSET + start, null, pointer, 4096);
++	}
++
++	@Override
++	public void setMSB(byte[] arr)
++	{
++		if(arr == null || arr.length != 2048) throw new IllegalArgumentException();
++		U.copyMemory(arr, BYTE_ARRAY_OFFSET, null, pointer + OFFSET_MSB, 2048);
++	}
++
++	@Override
++	public void setMSB(byte[] arr, int start)
++	{
++		if(arr == null || arr.length - start < 2048) throw new IllegalArgumentException();
++		U.copyMemory(arr, BYTE_ARRAY_OFFSET + start, null, pointer + OFFSET_MSB, 2048);
++	}
++
++	@Override
++	public void setBlockMetadata(byte[] arr)
++	{
++		if(arr == null || arr.length != 2048) throw new IllegalArgumentException();
++		U.copyMemory(arr, BYTE_ARRAY_OFFSET, null, pointer + OFFSET_META, 2048);
++	}
++
++	@Override
++	public void setBlockMetadata(byte[] arr, int start)
++	{
++		if(arr == null || arr.length - start < 2048) throw new IllegalArgumentException();
++		U.copyMemory(arr, BYTE_ARRAY_OFFSET + start, null, pointer + OFFSET_META, 2048);
++	}
++
++	@Override
++	public void setBlocklight(byte[] arr)
++	{
++		if(arr == null || arr.length != 2048) throw new IllegalArgumentException();
++		U.copyMemory(arr, BYTE_ARRAY_OFFSET, null, pointer + OFFSET_BLOCK_LIGHT, 2048);
++	}
++
++	@Override
++	public void setBlocklight(byte[] arr, int start)
++	{
++		if(arr == null || arr.length - start < 2048) throw new IllegalArgumentException();
++		U.copyMemory(arr, BYTE_ARRAY_OFFSET + start, null, pointer + OFFSET_BLOCK_LIGHT, 2048);
++	}
++
++	@Override
++	public void setSkylight(byte[] arr)
++	{
++		if(arr == null || arr.length != 2048) throw new IllegalArgumentException();
++		U.copyMemory(arr, BYTE_ARRAY_OFFSET, null, pointer + OFFSET_SKY_LIGHT, 2048);
++	}
++
++	@Override
++	public void setSkylight(byte[] arr, int start)
++	{
++		if(arr == null || arr.length - start < 2048) throw new IllegalArgumentException();
++		U.copyMemory(arr, BYTE_ARRAY_OFFSET + start, null, pointer + OFFSET_SKY_LIGHT, 2048);
++	}
++
++	//raw copy
++
++	@Override
++	public void copyLSB(byte[] arr)
++	{
++		if(arr == null || arr.length != 4096) throw new IllegalArgumentException();
++		U.copyMemory(null, pointer, arr, BYTE_ARRAY_OFFSET, 4096);
++	}
++
++	@Override
++	public void copyLSB(byte[] arr, int start)
++	{
++		if(arr == null || arr.length - start < 4096) throw new IllegalArgumentException();
++		U.copyMemory(null, pointer, arr, BYTE_ARRAY_OFFSET + start, 4096);
++	}
++
++	@Override
++	public void copyMSB(byte[] arr)
++	{
++		if(arr == null || arr.length != 2048) throw new IllegalArgumentException();
++		U.copyMemory(null, pointer + OFFSET_MSB, arr, BYTE_ARRAY_OFFSET, 2048);
++	}
++
++	@Override
++	public void copyMSB(byte[] arr, int start)
++	{
++		if(arr == null || arr.length - start < 2048) throw new IllegalArgumentException();
++		U.copyMemory(null, pointer + OFFSET_MSB, arr, BYTE_ARRAY_OFFSET + start, 2048);
++	}
++
++	@Override
++	public void copyBlockMetadata(byte[] arr)
++	{
++		if(arr == null || arr.length != 2048) throw new IllegalArgumentException();
++		U.copyMemory(null, pointer + OFFSET_META, arr, BYTE_ARRAY_OFFSET, 2048);
++	}
++
++	@Override
++	public void copyBlockMetadata(byte[] arr, int start)
++	{
++		if(arr == null || arr.length - start < 2048) throw new IllegalArgumentException();
++		U.copyMemory(null, pointer + OFFSET_META, arr, BYTE_ARRAY_OFFSET + start, 2048);
++	}
++
++	@Override
++	public void copyBlocklight(byte[] arr)
++	{
++		if(arr == null || arr.length != 2048) throw new IllegalArgumentException();
++		U.copyMemory(null, pointer + OFFSET_BLOCK_LIGHT, arr, BYTE_ARRAY_OFFSET, 2048);
++	}
++
++	@Override
++	public void copyBlocklight(byte[] arr, int start)
++	{
++		if(arr == null || arr.length - start < 2048) throw new IllegalArgumentException();
++		U.copyMemory(null, pointer + OFFSET_BLOCK_LIGHT, arr, BYTE_ARRAY_OFFSET + start, 2048);
++	}
++
++	@Override
++	public void copySkylight(byte[] arr)
++	{
++		if(arr == null || arr.length != 2048) throw new IllegalArgumentException();
++		U.copyMemory(null, pointer + OFFSET_SKY_LIGHT, arr, BYTE_ARRAY_OFFSET, 2048);
++	}
++
++	@Override
++	public void copySkylight(byte[] arr, int start)
++	{
++		if(arr == null || arr.length - start < 2048) throw new IllegalArgumentException();
++		U.copyMemory(null, pointer + OFFSET_SKY_LIGHT, arr, BYTE_ARRAY_OFFSET + start, 2048);
++	}
++
++	//clear
++
++	@Override
++	public void zerofillMSB()
++	{
++		U.setMemory(pointer + OFFSET_MSB, 2048, (byte)0);
++	}
++
++	@Override
++	public void zerofillSkylight()
++	{
++		U.setMemory(pointer + OFFSET_SKY_LIGHT, 2048, (byte)0);
++	}
++
++	@Override
++	public void zerofillAll()
++	{
++		U.setMemory(pointer, SLOT_SIZE, (byte)0);
++	}
++
++	//
++
++	@Override
++	public int getBlockId(int x, int y, int z)
++	{
++		return (getByte(y << 8 | z << 4 | x) & 255) | (get4bits(OFFSET_MSB, x, y, z) << 8);
++	}
++
++	@Override
++	public void setBlockId(int x, int y, int z, int id)
++	{
++		setByte(y << 8 | z << 4 | x, (byte)(id & 0xFF));
++		set4bits(OFFSET_MSB, x, y, z, (id & 3840) >> 8);
++	}
++
++	@Override
++	public int getMeta(int x, int y, int z)
++	{
++		return get4bits(OFFSET_META, x, y, z);
++	}
++
++	@Override
++	public void setMeta(int x, int y, int z, int meta)
++	{
++		set4bits(OFFSET_META, x, y, z, meta);
++	}
++
++	@Override
++	public int getBlocklight(int x, int y, int z)
++	{
++		return get4bits(OFFSET_BLOCK_LIGHT, x, y, z);
++	}
++
++	@Override
++	public void setBlocklight(int x, int y, int z, int val)
++	{
++		set4bits(OFFSET_BLOCK_LIGHT, x, y, z, val);
++	}
++
++	@Override
++	public int getSkylight(int x, int y, int z)
++	{
++		return get4bits(OFFSET_SKY_LIGHT, x, y, z);
++	}
++
++	@Override
++	public void setSkylight(int x, int y, int z, int val)
++	{
++		set4bits(OFFSET_SKY_LIGHT, x, y, z, val);
++	}
++}
+diff --git a/src/main/java/org/ultramine/server/chunk/alloc/unsafe/Unsafe8MemSlot.java b/src/main/java/org/ultramine/server/chunk/alloc/unsafe/Unsafe8MemSlot.java
+new file mode 100644
+index 00000000..8583c327
+--- /dev/null
++++ b/src/main/java/org/ultramine/server/chunk/alloc/unsafe/Unsafe8MemSlot.java
+@@ -0,0 +1,236 @@
++package org.ultramine.server.chunk.alloc.unsafe;
++
++import sun.misc.Unsafe;
++
++import javax.annotation.Nonnull;
++import javax.annotation.Nullable;
++
++public final class Unsafe8MemSlot extends AbstractUnsafeMemSlot
++{
++	private static final long BYTE_ARRAY_OFFSET = Unsafe.ARRAY_BYTE_BASE_OFFSET;
++	private static final int OFFSET_BLOCK_LIGHT = 4096+2048+2048;
++	private static final int OFFSET_SKY_LIGHT	= 4096+2048+2048+2048;
++
++	Unsafe8MemSlot(UnsafeChunkAlloc alloc, long pointer)
++	{
++		super(alloc, pointer);
++	}
++
++	private void setSingleLSB(int ind, byte data)
++	{
++		setChar(ind, (char)((getChar(ind) & 0xFF00) | (data & 0xFF)));
++	}
++
++	private byte getSingleLSB(int ind)
++	{
++		return (byte)(getChar(ind) & 0xFF);
++	}
++
++	private void setSingleMSB(int ind, byte data)
++	{
++		setChar(ind, (char)((getChar(ind) & 0xF0FF) | ((data & 0xF) << 8)));
++	}
++
++	private byte getSingleMSB(int ind)
++	{
++		return (byte)((getChar(ind) >> 8) & 0xF);
++	}
++
++	private void setSingleMeta(int ind, byte data)
++	{
++		setChar(ind, (char)((getChar(ind) & 0x0FFF) | ((data & 0xF) << 12)));
++	}
++
++	private byte getSingleMeta(int ind)
++	{
++		return (byte)((getChar(ind) >> 12) & 0xF);
++	}
++
++	@Override
++	public void setLSB(byte[] arr, int start)
++	{
++		if(arr == null || arr.length - start < 4096) throw new IllegalArgumentException();
++		for(int i = 0; i < 4096; i++)
++			setSingleLSB(i << 1, arr[start + i]);
++	}
++
++	@Override
++	public void setMSB(byte[] arr, int start)
++	{
++		if(arr == null || arr.length - start < 2048) throw new IllegalArgumentException();
++		for(int i = 0; i < 2048; i++)
++		{
++			byte data = arr[start + i];
++			int ind = (i << 1);
++			setSingleMSB(ind << 1,			data);
++			setSingleMSB((ind + 1) << 1,	(byte)(data >> 4));
++		}
++	}
++
++	@Override
++	public void setData(@Nonnull byte[] lsb, @Nullable byte[] msb, @Nonnull byte[] meta, @Nonnull byte[] blockLight, @Nullable byte[] skyLight)
++	{
++		for(int i = 0; i < 4096; i++)
++			setChar(i << 1, (char)(get4bits(meta, i) << 12 | get4bits(msb, i) << 8 | (lsb[i] & 0xFF)));
++		setBlocklight(blockLight);
++		if(skyLight != null)
++			setSkylight(skyLight);
++		else
++			zerofillSkylight();
++	}
++
++	private static int get4bits(@Nullable byte[] arr, int i)
++	{
++		if(arr == null)
++			return 0;
++		int data = arr[i >> 1];
++		return ((i & 1) == 0) ? (data & 0xF) : (data >> 4 & 0xF);
++	}
++
++	@Override
++	public void setBlockMetadata(byte[] arr, int start)
++	{
++		if(arr == null || arr.length - start < 2048) throw new IllegalArgumentException();
++		for(int i = 0; i < 2048; i++)
++		{
++			byte data = arr[start + i];
++			int ind = (i << 1);
++			setSingleMeta(ind << 1,			data);
++			setSingleMeta((ind + 1) << 1,	(byte)(data >> 4));
++		}
++	}
++
++	@Override
++	public void setBlocklight(byte[] arr, int start)
++	{
++		if(arr == null || arr.length - start < 2048) throw new IllegalArgumentException();
++		U.copyMemory(arr, BYTE_ARRAY_OFFSET + start, null, pointer + OFFSET_BLOCK_LIGHT, 2048);
++	}
++
++	@Override
++	public void setSkylight(byte[] arr, int start)
++	{
++		if(arr == null || arr.length - start < 2048) throw new IllegalArgumentException();
++		U.copyMemory(arr, BYTE_ARRAY_OFFSET + start, null, pointer + OFFSET_SKY_LIGHT, 2048);
++	}
++
++	@Override
++	public void copyLSB(byte[] arr, int start)
++	{
++		if(arr == null || arr.length - start < 4096) throw new IllegalArgumentException();
++		for(int i = 0; i < 4096; i++)
++			arr[start + i] = getSingleLSB(i << 1);
++	}
++
++	@Override
++	public void copyMSB(byte[] arr, int start)
++	{
++		if(arr == null || arr.length - start < 2048) throw new IllegalArgumentException();
++		for(int i = 0; i < 2048; i++)
++			arr[start + i] = (byte)((getSingleMSB(i << 2)) | (getSingleMSB(((i << 1) + 1) << 1) << 4));
++	}
++
++	@Override
++	public void copyBlockMetadata(byte[] arr, int start)
++	{
++		if(arr == null || arr.length - start < 2048) throw new IllegalArgumentException();
++		for(int i = 0; i < 2048; i++)
++			arr[start + i] = (byte)((getSingleMeta(i << 2)) | (getSingleMeta(((i << 1) + 1) << 1) << 4));
++	}
++
++	@Override
++	public void copyBlocklight(byte[] arr, int start)
++	{
++		if(arr == null || arr.length - start < 2048) throw new IllegalArgumentException();
++		U.copyMemory(null, pointer + OFFSET_BLOCK_LIGHT, arr, BYTE_ARRAY_OFFSET + start, 2048);
++	}
++
++	@Override
++	public void copySkylight(byte[] arr, int start)
++	{
++		if(arr == null || arr.length - start < 2048) throw new IllegalArgumentException();
++		U.copyMemory(null, pointer + OFFSET_SKY_LIGHT, arr, BYTE_ARRAY_OFFSET + start, 2048);
++	}
++
++	@Override
++	public void zerofillMSB()
++	{
++		for(int i = 0; i < 4096; i++)
++			setSingleMSB(i << 1, (byte)0);
++	}
++
++	@Override
++	public void zerofillSkylight()
++	{
++		U.setMemory(pointer + OFFSET_SKY_LIGHT, 2048, (byte)0);
++	}
++
++	@Override
++	public void zerofillAll()
++	{
++		U.setMemory(pointer, SLOT_SIZE, (byte)0);
++	}
++
++	//
++
++	@Override
++	public int getBlockId(int x, int y, int z)
++	{
++		return getChar((y << 8 | z << 4 | x) << 1) & 0xFFF;
++	}
++
++	@Override
++	public void setBlockId(int x, int y, int z, int id)
++	{
++		int ind = (y << 8 | z << 4 | x) << 1;
++		setChar(ind, (char)((getChar(ind) & 0xF000) | id));
++	}
++
++	@Override
++	public int getMeta(int x, int y, int z)
++	{
++		return getChar((y << 8 | z << 4 | x) << 1) >> 12;
++	}
++
++	@Override
++	public void setMeta(int x, int y, int z, int meta)
++	{
++		setSingleMeta((y << 8 | z << 4 | x) << 1, (byte)meta);
++	}
++
++	@Override
++	public void setBlockIdAndMeta(int x, int y, int z, int id, int meta)
++	{
++		setChar((y << 8 | z << 4 | x) << 1, (char)((meta << 12) | id));
++	}
++
++	@Override
++	public int getBlockIdAndMeta(int x, int y, int z)
++	{
++		return getChar((y << 8 | z << 4 | x) << 1);
++	}
++
++	@Override
++	public int getBlocklight(int x, int y, int z)
++	{
++		return get4bits(OFFSET_BLOCK_LIGHT, x, y, z);
++	}
++
++	@Override
++	public void setBlocklight(int x, int y, int z, int val)
++	{
++		set4bits(OFFSET_BLOCK_LIGHT, x, y, z, val);
++	}
++
++	@Override
++	public int getSkylight(int x, int y, int z)
++	{
++		return get4bits(OFFSET_SKY_LIGHT, x, y, z);
++	}
++
++	@Override
++	public void setSkylight(int x, int y, int z, int val)
++	{
++		set4bits(OFFSET_SKY_LIGHT, x, y, z, val);
++	}
++}
+diff --git a/src/main/java/org/ultramine/server/chunk/alloc/unsafe/UnsafeChunkAlloc.java b/src/main/java/org/ultramine/server/chunk/alloc/unsafe/UnsafeChunkAlloc.java
+new file mode 100644
+index 00000000..f36c254c
+--- /dev/null
++++ b/src/main/java/org/ultramine/server/chunk/alloc/unsafe/UnsafeChunkAlloc.java
+@@ -0,0 +1,110 @@
++package org.ultramine.server.chunk.alloc.unsafe;
++
++import gnu.trove.iterator.TLongIterator;
++import gnu.trove.list.TLongList;
++import gnu.trove.list.array.TLongArrayList;
++import org.ultramine.server.chunk.alloc.ChunkAllocService;
++import org.ultramine.server.chunk.alloc.MemSlot;
++import org.ultramine.server.util.UnsafeUtil;
++import sun.misc.Unsafe;
++
++import javax.annotation.Nonnull;
++import javax.annotation.concurrent.ThreadSafe;
++import java.util.ArrayDeque;
++import java.util.ArrayList;
++import java.util.Deque;
++import java.util.List;
++import java.util.Timer;
++import java.util.TimerTask;
++import java.util.function.LongFunction;
++
++import static org.ultramine.server.chunk.alloc.unsafe.AbstractUnsafeMemSlot.SLOT_SIZE;
++
++@ThreadSafe
++public class UnsafeChunkAlloc implements ChunkAllocService
++{
++	private static final Unsafe U = UnsafeUtil.getUnsafe();
++	private static final int SLOT_LIMIT = Integer.parseInt(System.getProperty("org.ultramine.chunk.alloc.offheap.memlimit", "6")) * (1024 * 1024 * 1024 / SLOT_SIZE);
++	// We delaying freeing not only for caching, but to be sure that nobody access this memory from other threads through data races
++	private static final int SLOT_FREE_DELAY = 5000;
++	private static final boolean USE_8_LAYOUT = System.getProperty("org.ultramine.chunk.alloc.layout", "7").equals("8"); // false by default
++
++	private final LongFunction<MemSlot> slotFactory = USE_8_LAYOUT ? pointer -> new Unsafe8MemSlot(this, pointer) : pointer -> new Unsafe7MemSlot(this, pointer);
++	private final Deque<ReleasedSlot> releasedSlots = new ArrayDeque<>();
++	private int slots;
++
++	public UnsafeChunkAlloc()
++	{
++		new Timer("OffHeapChunkAlloc cleaner", true).schedule(new TimerTask()
++		{
++			@Override
++			public void run()
++			{
++				releaseAvailableSlots();
++			}
++		}, 2000, 2000);
++	}
++
++	@Nonnull
++	@Override
++	public synchronized MemSlot allocateSlot()
++	{
++		ReleasedSlot released = releasedSlots.poll();
++		if(released != null)
++			return slotFactory.apply(released.pointer);
++		slots++;
++		if(slots >= SLOT_LIMIT)
++			throw new OutOfMemoryError("Off-heap chunk storage");
++		return slotFactory.apply(U.allocateMemory(SLOT_SIZE));
++	}
++
++	synchronized void releaseSlot(long pointer)
++	{
++		releasedSlots.add(new ReleasedSlot(pointer));
++	}
++
++	@Override
++	public long getOffHeapTotalMemory()
++	{
++		return (long)slots * SLOT_SIZE;
++	}
++
++	@Override
++	public long getOffHeapUsedMemory()
++	{
++		return (long)(slots - releasedSlots.size()) * SLOT_SIZE;
++	}
++
++	private void releaseAvailableSlots()
++	{
++		TLongList toRelease = new TLongArrayList();
++		synchronized(this)
++		{
++			long time = System.currentTimeMillis();
++			while(true)
++			{
++				ReleasedSlot slot = releasedSlots.peek();
++				if(slot == null || time - slot.time < SLOT_FREE_DELAY)
++					break;
++				releasedSlots.poll();
++				toRelease.add(slot.pointer);
++			}
++			slots -= toRelease.size();
++		}
++
++		for(TLongIterator it = toRelease.iterator(); it.hasNext();)
++			U.freeMemory(it.next());
++	}
++
++	private static class ReleasedSlot
++	{
++		final long pointer;
++		final long time;
++
++		public ReleasedSlot(long pointer)
++		{
++			this.pointer = pointer;
++			time = System.currentTimeMillis();
++		}
++	}
++}
+diff --git a/src/main/java/org/ultramine/server/world/WorldDescriptor.java b/src/main/java/org/ultramine/server/world/WorldDescriptor.java
+index a4c40e46..08a1e19e 100644
+--- a/src/main/java/org/ultramine/server/world/WorldDescriptor.java
++++ b/src/main/java/org/ultramine/server/world/WorldDescriptor.java
+@@ -318,7 +318,7 @@ private void destroyWorld(boolean save)
+ 		
+ 		MinecraftForge.EVENT_BUS.post(new WorldEvent.Unload(world));
+ 		DimensionManager.setWorld(world.provider.dimensionId, null);
+-		world.theChunkProviderServer.free();
++		world.theChunkProviderServer.release();
+ 		for(Object o : world.loadedTileEntityList)
+ 			((TileEntity)o).setWorldObj(null);
+ 		world.loadedTileEntityList.clear();
