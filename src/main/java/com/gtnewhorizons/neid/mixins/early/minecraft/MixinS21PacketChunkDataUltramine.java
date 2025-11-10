@@ -230,8 +230,10 @@ public abstract class MixinS21PacketChunkDataUltramine {
     }
 
     private static Object getSlot(ExtendedBlockStorage ebs) throws Exception {
-        Method getSlotMethod = ebs.getClass().getMethod("getSlot");
-        return getSlotMethod.invoke(ebs);
+        // Access slot field directly via reflection (getSlot() method doesn't exist at compile time)
+        java.lang.reflect.Field slotField = ExtendedBlockStorage.class.getDeclaredField("slot");
+        slotField.setAccessible(true);
+        return slotField.get(ebs);
     }
 
     private static void copyFromSlot(Object slot, String methodName, byte[] dest) throws Exception {
