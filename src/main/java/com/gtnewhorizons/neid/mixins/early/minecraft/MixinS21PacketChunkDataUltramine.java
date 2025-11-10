@@ -154,9 +154,9 @@ public abstract class MixinS21PacketChunkDataUltramine {
                                 if (msbVal != 0) blocksWithMSB++;
                             }
 
-                            // Write as big-endian 16-bit
-                            data[offset++] = (byte) ((blockId >> 8) & 0xFF);
+                            // Write as little-endian 16-bit (LSB first, MSB second)
                             data[offset++] = (byte) (blockId & 0xFF);
+                            data[offset++] = (byte) ((blockId >> 8) & 0xFF);
                         }
                     }
                 }
@@ -181,9 +181,9 @@ public abstract class MixinS21PacketChunkDataUltramine {
                         for (int x = 0; x < 16; x++) {
                             int metaVal = get4bitsCoordinate(meta, x, y, z);
 
-                            // Write as big-endian 16-bit
-                            data[offset++] = 0; // MSB always 0
+                            // Write as little-endian 16-bit (LSB first, MSB second)
                             data[offset++] = (byte) (metaVal & 0xFF);
+                            data[offset++] = 0; // MSB always 0
                         }
                     }
                 }
