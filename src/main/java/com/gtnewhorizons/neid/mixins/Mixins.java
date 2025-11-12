@@ -54,9 +54,7 @@ public enum Mixins {
             "minecraft.MixinExtendedBlockStorageUltramine",
             "minecraft.MixinS21PacketChunkDataUltramine",
             "minecraft.MixinAnvilChunkLoaderUltramine",
-            "minecraft.MixinEbsSaveFakeNbt",
-            "minecraft.MixinAnvilChunkLoaderForceConvert",
-            "minecraft.MixinAnvilChunkLoaderAsyncDebug"
+            "minecraft.MixinEbsSaveFakeNbt"
     ).setApplyIf(() -> Common.ultramineTainted));
     // spotless:on
     private final List<String> mixinClasses;

@@ -9,14 +9,16 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Overwrite;
+import org.spongepowered.asm.mixin.Shadow;
 
 import com.gtnewhorizons.neid.Constants;
+import com.gtnewhorizons.neid.mixins.interfaces.IExtendedBlockStorageMixin;
 
 /**
  * Ultramine-specific compatibility mixin for S21PacketChunkData.
  *
- * ultramine_core uses MemSlot with 8-bit LSB + 4-bit MSB format. We need to convert this to vanilla NEID 16-bit format
- * for the client.
+ * TWO PATHS TO HANDLE: 1. VANILLA PATH: func_149269_a() - @Overwrite converts MemSlot to 16-bit NEID 2. ULTRAMINE PATH:
+ * deflate() → UMHooks.extractAndDeflateChunkPacketData() - @Redirect converts to 16-bit NEID
  *
  * Priority 1500 ensures it applies after base NEID mixins.
  */
@@ -24,6 +26,18 @@ import com.gtnewhorizons.neid.Constants;
 public abstract class MixinS21PacketChunkDataUltramine {
 
     private static final Logger LOGGER = LogManager.getLogger("NEID-Ultramine");
+
+    @Shadow
+    private byte[] field_149281_e; // deflated data
+
+    @Shadow
+    private int field_149285_h; // deflated length
+
+    @Shadow
+    private int field_149280_d; // section mask
+
+    @Shadow
+    private int field_149283_c; // section mask 2
 
     /**
      * OVERWRITE ultramine's func_149269_a() to send vanilla NEID format (16-bit blocks) instead of ultramine format
@@ -262,5 +276,174 @@ public abstract class MixinS21PacketChunkDataUltramine {
             sb.append(String.format("%02X ", bytes[i]));
         }
         return sb.toString();
+    }
+
+    /**
+     * ULTRAMINE PATH INJECT: Override deflate() to use NEID 16-bit format instead of ultramine's 8-bit format!
+     *
+     * This handles the ChunkSendManager async path: makeForSend(ChunkSnapshot) → deflate()
+     */
+    @org.spongepowered.asm.mixin.injection.Inject(
+            method = "deflate",
+            at = @org.spongepowered.asm.mixin.injection.At("HEAD"),
+            remap = false,
+            cancellable = true,
+            require = 0)
+    private void neid$ultramineDeflateOverride(org.spongepowered.asm.mixin.injection.callback.CallbackInfo ci) {
+        // Check if this is ultramine path (chunkSnapshot field exists)
+        Object chunkSnapshot = null;
+        try {
+            java.lang.reflect.Field chunkSnapshotField = S21PacketChunkData.class.getDeclaredField("chunkSnapshot");
+            chunkSnapshotField.setAccessible(true);
+            chunkSnapshot = chunkSnapshotField.get(this);
+        } catch (Exception e) {
+            // Not ultramine path, let vanilla/other path handle it
+            return;
+        }
+
+        if (chunkSnapshot == null) {
+            // Not ultramine path
+            return;
+        }
+
+        // This IS ultramine path - cancel original and do our NEID 16-bit packing!
+        ci.cancel();
+        LOGGER.info("@@@ INJECT deflate() - converting ChunkSnapshot to NEID 16-bit!");
+
+        java.util.zip.Deflater deflater = new java.util.zip.Deflater(7);
+        try {
+            // Get ExtendedBlockStorage[] from ChunkSnapshot
+            ExtendedBlockStorage[] ebsArr = (ExtendedBlockStorage[]) chunkSnapshot.getClass().getMethod("getEbsArr")
+                    .invoke(chunkSnapshot);
+
+            // Calculate mask
+            int mask = 0;
+            for (int i = 0; i < ebsArr.length; ++i) {
+                ExtendedBlockStorage ebs = ebsArr[i];
+                if (ebs != null && !ebs.isEmpty()) mask |= 1 << i;
+            }
+
+            if (mask == 0) {
+                // Empty chunk
+                byte[] EMPTY_CHUNK_SEQUENCE = { 120, -38, -19, -65, 49, 1, 0, 0, 0, -62, -96, -11, 79, 109, 13, 15, -96,
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, -128, 119, 3, 48, 0, 0, 1 };
+                this.field_149281_e = EMPTY_CHUNK_SEQUENCE;
+                this.field_149285_h = EMPTY_CHUNK_SEQUENCE.length;
+                this.field_149280_d = 1;
+                this.field_149283_c = 1;
+                return;
+            }
+
+            // Create NEID 16-bit format data
+            int ebsCount = Integer.bitCount(mask);
+            boolean hasNoSky = (boolean) chunkSnapshot.getClass().getMethod("isWorldHasNoSky").invoke(chunkSnapshot);
+            byte[] biomeArray = (byte[]) chunkSnapshot.getClass().getMethod("getBiomeArray").invoke(chunkSnapshot);
+
+            int totalSize = ebsCount * Constants.BYTES_PER_EBS + biomeArray.length;
+            byte[] data = new byte[totalSize];
+            int offset = 0;
+
+            LOGGER.info(
+                    "INJECT deflate(): Creating NEID 16-bit format - ebsCount={}, mask=0x{}",
+                    ebsCount,
+                    Integer.toHexString(mask));
+
+            // PHASE 1: Write all 16-bit blocks
+            for (int i = 0; i < ebsArr.length; i++) {
+                if ((mask & (1 << i)) == 0) continue;
+                ExtendedBlockStorage ebs = ebsArr[i];
+
+                IExtendedBlockStorageMixin ebsMixin = (IExtendedBlockStorageMixin) ebs;
+                short[] blockArray = ebsMixin.getBlock16BArray();
+
+                if (blockArray != null) {
+                    for (int j = 0; j < 4096; j++) {
+                        int blockId = blockArray[j] & 0xFFFF;
+                        data[offset++] = (byte) ((blockId >> 8) & 0xFF);
+                        data[offset++] = (byte) (blockId & 0xFF);
+                    }
+                } else {
+                    LOGGER.warn("Block16BArray is null for EBS {}, using zeros", i);
+                    offset += 8192;
+                }
+            }
+
+            // PHASE 2: Write all 16-bit metadata
+            for (int i = 0; i < ebsArr.length; i++) {
+                if ((mask & (1 << i)) == 0) continue;
+                ExtendedBlockStorage ebs = ebsArr[i];
+
+                IExtendedBlockStorageMixin ebsMixin = (IExtendedBlockStorageMixin) ebs;
+                short[] metaArray = ebsMixin.getBlock16BMetaArray();
+
+                if (metaArray != null) {
+                    for (int j = 0; j < 4096; j++) {
+                        int meta = metaArray[j] & 0xFFFF;
+                        data[offset++] = (byte) ((meta >> 8) & 0xFF);
+                        data[offset++] = (byte) (meta & 0xFF);
+                    }
+                } else {
+                    LOGGER.warn("Block16BMetaArray is null for EBS {}, using zeros", i);
+                    offset += 8192;
+                }
+            }
+
+            // PHASE 3: Write BlockLight from MemSlot
+            for (int i = 0; i < ebsArr.length; i++) {
+                if ((mask & (1 << i)) == 0) continue;
+                ExtendedBlockStorage ebs = ebsArr[i];
+                Object slot = getSlot(ebs);
+                copyFromSlot(slot, "copyBlocklight", data, offset);
+                offset += 2048;
+            }
+
+            // PHASE 4: Write SkyLight from MemSlot
+            if (!hasNoSky) {
+                for (int i = 0; i < ebsArr.length; i++) {
+                    if ((mask & (1 << i)) == 0) continue;
+                    ExtendedBlockStorage ebs = ebsArr[i];
+                    Object slot = getSlot(ebs);
+                    copyFromSlot(slot, "copySkylight", data, offset);
+                    offset += 2048;
+                }
+            }
+
+            // PHASE 5: Write biome
+            System.arraycopy(biomeArray, 0, data, offset, biomeArray.length);
+
+            // Deflate the data
+            deflater.setInput(data, 0, data.length);
+            deflater.finish();
+
+            byte[] deflated = new byte[4096];
+            int deflatedLen = 0;
+            while (!deflater.finished()) {
+                if (deflatedLen == deflated.length) deflated = java.util.Arrays.copyOf(deflated, deflated.length * 2);
+                deflatedLen += deflater.deflate(deflated, deflatedLen, deflated.length - deflatedLen);
+            }
+
+            // Release snapshot
+            chunkSnapshot.getClass().getMethod("release").invoke(chunkSnapshot);
+
+            // Set deflated data to this packet
+            this.field_149281_e = deflated;
+            this.field_149285_h = deflatedLen;
+            this.field_149280_d = mask;
+            this.field_149283_c = mask;
+
+            LOGGER.info(
+                    "INJECT deflate() complete: rawSize={}, deflatedSize={}, mask=0x{}",
+                    data.length,
+                    deflatedLen,
+                    Integer.toHexString(mask));
+
+        } catch (Exception e) {
+            LOGGER.error("INJECT deflate() FAILED!", e);
+            // Set empty data to avoid crash
+            this.field_149281_e = new byte[0];
+            this.field_149285_h = 0;
+        } finally {
+            deflater.end();
+        }
     }
 }

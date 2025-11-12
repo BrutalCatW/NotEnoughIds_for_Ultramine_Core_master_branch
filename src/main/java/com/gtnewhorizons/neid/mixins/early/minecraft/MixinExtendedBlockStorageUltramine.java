@@ -230,15 +230,17 @@ public abstract class MixinExtendedBlockStorageUltramine {
             int sampleBlockId = -1;
             int sampleX = -1, sampleY = -1, sampleZ = -1;
 
-            // Sync all blocks: MemSlot → NEID arrays (y→z→x order to match index calculation)
+            // CRITICAL FIX: NEID arrays are LINEAR (0,1,2,3...), NOT coordinate-based!
+            // Iterate y→z→x to create sequential linear indices
+            int linearIndex = 0;
             for (int y = 0; y < 16; y++) {
                 for (int z = 0; z < 16; z++) {
                     for (int x = 0; x < 16; x++) {
-                        int index = y << 8 | z << 4 | x;
                         int blockId = (int) getBlockIdMethod.invoke(slot, x, y, z);
                         int meta = (int) getMetaMethod.invoke(slot, x, y, z);
-                        targetBlockArray[index] = (short) (blockId & 0xFFFF);
-                        targetMetaArray[index] = (short) (meta & 0xFFFF);
+                        targetBlockArray[linearIndex] = (short) (blockId & 0xFFFF);
+                        targetMetaArray[linearIndex] = (short) (meta & 0xFFFF);
+                        linearIndex++;
 
                         // Sample for debug
                         if (blockId != 0) {
