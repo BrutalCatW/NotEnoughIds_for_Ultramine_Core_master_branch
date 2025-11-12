@@ -126,7 +126,7 @@ public class MixinAnvilChunkLoaderUltramine {
             }
 
             Class<?> slotClass = slot.getClass();
-            java.lang.reflect.Method setBlockMethod = slotClass.getMethod("setBlock", int.class, int.class, int.class, int.class);
+            java.lang.reflect.Method setBlockIdMethod = slotClass.getMethod("setBlockId", int.class, int.class, int.class, int.class);
             java.lang.reflect.Method setMetaMethod = slotClass.getMethod("setMeta", int.class, int.class, int.class, int.class);
 
             // Read NEID 16-bit format and write to MemSlot
@@ -141,7 +141,7 @@ public class MixinAnvilChunkLoaderUltramine {
                         int meta = (data16[linearIndex * 2] & 0xFF) | ((data16[linearIndex * 2 + 1] & 0xFF) << 8);
 
                         // Write to MemSlot
-                        setBlockMethod.invoke(slot, x, y, z, blockId);
+                        setBlockIdMethod.invoke(slot, x, y, z, blockId);
                         setMetaMethod.invoke(slot, x, y, z, meta);
 
                         linearIndex++;
