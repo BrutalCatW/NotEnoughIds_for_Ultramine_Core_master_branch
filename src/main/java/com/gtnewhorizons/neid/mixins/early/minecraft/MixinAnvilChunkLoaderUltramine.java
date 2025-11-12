@@ -62,10 +62,97 @@ public class MixinAnvilChunkLoaderUltramine {
     }
 
     /**
-     * DO NOT sync after load! Ultramine already loads vanilla "Blocks"/"Add"/"Data" tags directly into MemSlot via
-     * slot.setData(). Vanilla NEID redirects DON'T run (no instanceof EbsSaveFakeNbt after disk load), so NEID arrays
-     * are EMPTY. Syncing would OVERWRITE correct MemSlot data with empty NEID arrays!
+     * CRITICAL: Load NEID "Blocks16" format after Ultramine loads vanilla format!
+     * Ultramine loads vanilla "Blocks"/"Add"/"Data" which only supports 12-bit (4096 blocks).
+     * For blocks > 4095 we MUST load "Blocks16" format and write to MemSlot!
      */
+    @Inject(method = "readChunkFromNBT", at = @At(value = "RETURN"), require = 0)
+    private void neid$loadNeidFormatAfterVanilla(World world, NBTTagCompound nbt, CallbackInfoReturnable<Chunk> cir) {
+        Chunk chunk = cir.getReturnValue();
+        if (chunk == null) return;
+
+        LOGGER.info("Loading NEID Blocks16 format for chunk ({}, {})", chunk.xPosition, chunk.zPosition);
+
+        try {
+            // Get all ExtendedBlockStorage sections
+            java.lang.reflect.Method getBlockStorageArray = chunk.getClass().getMethod("func_76587_i");
+            ExtendedBlockStorage[] ebsArray = (ExtendedBlockStorage[]) getBlockStorageArray.invoke(chunk);
+
+            // Get Sections list from NBT
+            NBTTagList sectionsList = nbt.getTagList("Sections", 10); // 10 = NBTTagCompound
+
+            for (int i = 0; i < sectionsList.tagCount(); i++) {
+                NBTTagCompound sectionNbt = sectionsList.getCompoundTagAt(i);
+                int yIndex = sectionNbt.getByte("Y") & 0xFF;
+
+                if (yIndex < 0 || yIndex >= ebsArray.length) continue;
+                ExtendedBlockStorage ebs = ebsArray[yIndex];
+                if (ebs == null) continue;
+
+                // Check if this section has NEID format
+                if (!sectionNbt.hasKey("Blocks16", 7)) continue; // 7 = byte array
+
+                byte[] blocks16 = sectionNbt.getByteArray("Blocks16");
+                byte[] data16 = sectionNbt.getByteArray("Data16");
+
+                if (blocks16.length != 8192 || data16.length != 8192) {
+                    LOGGER.warn("Invalid Blocks16/Data16 size for section {}", yIndex);
+                    continue;
+                }
+
+                // Load NEID format into MemSlot
+                loadNeidFormatToMemSlot(ebs, blocks16, data16);
+                LOGGER.info("Loaded NEID Blocks16 format for section {}", yIndex);
+            }
+
+        } catch (Exception e) {
+            LOGGER.error("Failed to load NEID format", e);
+        }
+    }
+
+    /**
+     * Loads NEID 16-bit format from NBT arrays into MemSlot.
+     */
+    private void loadNeidFormatToMemSlot(ExtendedBlockStorage ebs, byte[] blocks16, byte[] data16) {
+        try {
+            // Get MemSlot
+            java.lang.reflect.Field slotField = ExtendedBlockStorage.class.getDeclaredField("slot");
+            slotField.setAccessible(true);
+            Object slot = slotField.get(ebs);
+
+            if (slot == null) {
+                LOGGER.warn("MemSlot is null, cannot load NEID format");
+                return;
+            }
+
+            Class<?> slotClass = slot.getClass();
+            java.lang.reflect.Method setBlockMethod = slotClass.getMethod("setBlock", int.class, int.class, int.class, int.class);
+            java.lang.reflect.Method setMetaMethod = slotClass.getMethod("setMeta", int.class, int.class, int.class, int.class);
+
+            // Read NEID 16-bit format and write to MemSlot
+            int linearIndex = 0;
+            for (int y = 0; y < 16; y++) {
+                for (int z = 0; z < 16; z++) {
+                    for (int x = 0; x < 16; x++) {
+                        // Read 16-bit block ID (little-endian in NBT)
+                        int blockId = (blocks16[linearIndex * 2] & 0xFF) | ((blocks16[linearIndex * 2 + 1] & 0xFF) << 8);
+
+                        // Read 16-bit metadata (little-endian in NBT)
+                        int meta = (data16[linearIndex * 2] & 0xFF) | ((data16[linearIndex * 2 + 1] & 0xFF) << 8);
+
+                        // Write to MemSlot
+                        setBlockMethod.invoke(slot, x, y, z, blockId);
+                        setMetaMethod.invoke(slot, x, y, z, meta);
+
+                        linearIndex++;
+                    }
+                }
+            }
+
+        } catch (Exception e) {
+            LOGGER.error("Failed to load NEID format to MemSlot", e);
+        }
+    }
 
     /**
      * Synchronizes MemSlot data TO NEID arrays for saving. Reads from MemSlot using reflection and writes to NEID

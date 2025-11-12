@@ -139,14 +139,14 @@ public abstract class MixinS21PacketChunkDataUltramine {
                 int nonZeroBlocks = 0;
                 int blocksWithMSB = 0;
 
-                // CRITICAL: Write in LINEAR order (matching client's ShortBuffer.put())
-                // Index calculation y << 8 | z << 4 | x creates sequential indices 0,1,2,3...
+                // CRITICAL: copyLSB() and copyMSB() return LINEAR arrays (0,1,2,3...)
+                // NOT coordinate-based! So use linear index directly.
+                int linearIndex = 0;
                 for (int y = 0; y < 16; y++) {
                     for (int z = 0; z < 16; z++) {
                         for (int x = 0; x < 16; x++) {
-                            int index = y << 8 | z << 4 | x;
-                            int lsbVal = lsb[index] & 0xFF;
-                            int msbVal = get4bitsCoordinate(msb, x, y, z);
+                            int lsbVal = lsb[linearIndex] & 0xFF;
+                            int msbVal = get4bits(msb, linearIndex);
                             int blockId = (msbVal << 8) | lsbVal;
 
                             if (blockId != 0) {
@@ -154,9 +154,10 @@ public abstract class MixinS21PacketChunkDataUltramine {
                                 if (msbVal != 0) blocksWithMSB++;
                             }
 
-                            // Write as little-endian 16-bit (LSB first, MSB second)
-                            data[offset++] = (byte) (blockId & 0xFF);
+                            // Write as big-endian 16-bit (matches vanilla NEID client reading)
                             data[offset++] = (byte) ((blockId >> 8) & 0xFF);
+                            data[offset++] = (byte) (blockId & 0xFF);
+                            linearIndex++;
                         }
                     }
                 }
@@ -175,15 +176,17 @@ public abstract class MixinS21PacketChunkDataUltramine {
                 byte[] meta = new byte[2048];
                 copyFromSlot(slot, "copyBlockMetadata", meta);
 
-                // CRITICAL: Convert 4-bit nibbles to 16-bit using coordinate-based reading!
+                // CRITICAL: copyBlockMetadata() returns LINEAR nibble array, use linear index!
+                int linearIndex = 0;
                 for (int y = 0; y < 16; y++) {
                     for (int z = 0; z < 16; z++) {
                         for (int x = 0; x < 16; x++) {
-                            int metaVal = get4bitsCoordinate(meta, x, y, z);
+                            int metaVal = get4bits(meta, linearIndex);
 
-                            // Write as little-endian 16-bit (LSB first, MSB second)
-                            data[offset++] = (byte) (metaVal & 0xFF);
+                            // Write as big-endian 16-bit (matches vanilla NEID)
                             data[offset++] = 0; // MSB always 0
+                            data[offset++] = (byte) (metaVal & 0xFF);
+                            linearIndex++;
                         }
                     }
                 }
