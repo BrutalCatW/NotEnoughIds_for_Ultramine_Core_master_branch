@@ -61,45 +61,42 @@ public abstract class MixinExtendedBlockStorageUltramine {
     }
 
     /**
-     * CRITICAL: After copy() returns, read from COPY's MemSlot and write to COPY's NEID arrays! ultramine's
-     * ExtendedBlockStorage writes directly to MemSlot, NOT to NEID arrays. So ORIGINAL NEID arrays are EMPTY! We must
-     * read from MemSlot instead.
+     * CRITICAL: After copy() returns, copy NEID arrays from ORIGINAL to COPY! Ultramine copy() creates new EBS with
+     * MemSlot copy, but DOES NOT copy NEID arrays (block16BArray/block16BMetaArray). MemSlot only stores 4-bit
+     * metadata, but NEID arrays store full 16-bit metadata! We must copy NEID arrays directly to preserve extended
+     * (16-bit) metadata!
      */
     @Inject(method = "copy", at = @At("RETURN"), remap = false, require = 0)
-    private void neid$syncFromMemSlotAfterCopy(CallbackInfoReturnable<ExtendedBlockStorage> cir) {
+    private void neid$copyNeidArraysAfterCopy(CallbackInfoReturnable<ExtendedBlockStorage> cir) {
         ExtendedBlockStorage copy = cir.getReturnValue();
 
-        // DIAGNOSTIC: Check blockRefCount and isEmpty()
-        int origBlockRefCount = this.blockRefCount;
-        boolean origIsEmpty = ((ExtendedBlockStorage) (Object) this).isEmpty();
-        int copyBlockRefCount = -1;
-        boolean copyIsEmpty = true;
-
-        if (copy != null) {
-            // Get blockRefCount from copy via reflection (safer than casting)
-            try {
-                java.lang.reflect.Field blockRefCountField = ExtendedBlockStorage.class
-                        .getDeclaredField("blockRefCount");
-                blockRefCountField.setAccessible(true);
-                copyBlockRefCount = blockRefCountField.getInt(copy);
-            } catch (Exception e) {
-                LOGGER.debug("[COPY] Could not read copy blockRefCount: {}", e.getMessage());
-            }
-            copyIsEmpty = copy.isEmpty();
-        }
-
-        LOGGER.info(
-                "[COPY] orig: blockRefCount={}, isEmpty={}; copy: blockRefCount={}, isEmpty={}",
-                origBlockRefCount,
-                origIsEmpty,
-                copyBlockRefCount,
-                copyIsEmpty);
-
         if (copy != null && copy != (Object) this) {
-            LOGGER.info("[COPY] Calling syncMemSlotToNeidArrays for copy");
-            syncMemSlotToNeidArrays(copy);
-        } else {
-            LOGGER.warn("[COPY] Skipped sync: copy={}, same={}", copy != null, copy == (Object) this);
+            try {
+                IExtendedBlockStorageMixin origMixin = (IExtendedBlockStorageMixin) this;
+                IExtendedBlockStorageMixin copyMixin = (IExtendedBlockStorageMixin) copy;
+
+                short[] origBlockArray = origMixin.getBlock16BArray();
+                short[] origMetaArray = origMixin.getBlock16BMetaArray();
+
+                if (origBlockArray != null && origMetaArray != null) {
+                    short[] copyBlockArray = copyMixin.getBlock16BArray();
+                    short[] copyMetaArray = copyMixin.getBlock16BMetaArray();
+
+                    if (copyBlockArray != null && copyMetaArray != null) {
+                        // Copy NEID arrays directly to preserve 16-bit metadata
+                        System.arraycopy(origBlockArray, 0, copyBlockArray, 0, 4096);
+                        System.arraycopy(origMetaArray, 0, copyMetaArray, 0, 4096);
+
+                        LOGGER.debug("[COPY] Copied NEID arrays (16-bit metadata preserved)");
+                    } else {
+                        LOGGER.warn("[COPY] Copy NEID arrays are null, cannot copy");
+                    }
+                } else {
+                    LOGGER.warn("[COPY] Original NEID arrays are null, cannot copy");
+                }
+            } catch (Exception e) {
+                LOGGER.error("[COPY] Failed to copy NEID arrays", e);
+            }
         }
     }
 
@@ -140,6 +137,26 @@ public abstract class MixinExtendedBlockStorageUltramine {
             }
         } catch (Exception e) {
             // Silently ignore - setBlockId is called very frequently
+        }
+    }
+
+    /**
+     * CRITICAL: Intercept NEID's setExtBlockMetadata to sync TO ultramine MemSlot! Base NEID @Overwrite only writes to
+     * block16BMetaArray. We must sync metadata changes to MemSlot so that ChunkSnapshot.copy() sees updated values.
+     */
+    @Inject(method = "setExtBlockMetadata", at = @At("RETURN"), require = 0)
+    private void neid$syncMetaToMemSlotAfterSetMetadata(int x, int y, int z, int meta, CallbackInfo ci) {
+        try {
+            Object slot = getSlotViaReflection();
+            if (slot != null) {
+                Class<?> slotClass = slot.getClass();
+                java.lang.reflect.Method setMeta = slotClass
+                        .getMethod("setMeta", int.class, int.class, int.class, int.class);
+                // Sync full 16-bit metadata to MemSlot (ultramine MemSlot supports 16-bit internally)
+                setMeta.invoke(slot, x, y, z, meta);
+            }
+        } catch (Exception e) {
+            // Silently ignore - setExtBlockMetadata is called very frequently
         }
     }
 

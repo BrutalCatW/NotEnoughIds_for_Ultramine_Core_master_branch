@@ -134,11 +134,12 @@ public class MixinEbsSaveFakeNbt {
                         int blockId = block16BArray[coordIndex] & 0xFFFF;
                         int meta = block16BMetaArray[coordIndex] & 0xFFFF;
 
-                        // Write as 16-bit (little-endian) in linear order for ByteBuffer
-                        blocks16[linearIndex * 2] = (byte) (blockId & 0xFF);
-                        blocks16[linearIndex * 2 + 1] = (byte) ((blockId >> 8) & 0xFF);
-                        data16[linearIndex * 2] = (byte) (meta & 0xFF);
-                        data16[linearIndex * 2 + 1] = 0;
+                        // Write as 16-bit (BIG-ENDIAN) for ByteBuffer.wrap().asShortBuffer()
+                        // ByteBuffer.wrap() uses BIG_ENDIAN by default, so we write MSB first
+                        blocks16[linearIndex * 2] = (byte) ((blockId >> 8) & 0xFF);
+                        blocks16[linearIndex * 2 + 1] = (byte) (blockId & 0xFF);
+                        data16[linearIndex * 2] = (byte) ((meta >> 8) & 0xFF);
+                        data16[linearIndex * 2 + 1] = (byte) (meta & 0xFF);
                         linearIndex++;
                     }
                 }

@@ -1,7 +1,5 @@
 package com.gtnewhorizons.neid.mixins.early.minecraft;
 
-import net.minecraft.nbt.NBTTagCompound;
-import net.minecraft.world.World;
 import net.minecraft.world.chunk.Chunk;
 import net.minecraft.world.chunk.storage.AnvilChunkLoader;
 import net.minecraft.world.chunk.storage.ExtendedBlockStorage;
@@ -11,7 +9,6 @@ import org.apache.logging.log4j.Logger;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
-import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 import com.gtnewhorizons.neid.mixins.interfaces.IExtendedBlockStorageMixin;
 
@@ -27,125 +24,59 @@ public class MixinAnvilChunkLoaderUltramine {
     private static final Logger LOGGER = LogManager.getLogger("NEID-Ultramine");
 
     /**
-     * CRITICAL: Before saving chunk to NBT, sync MemSlot → NEID arrays! ultramine's ExtendedBlockStorage writes
-     * directly to MemSlot, NOT to NEID arrays. So NEID arrays may be EMPTY! We must read from MemSlot and populate NEID
-     * arrays before vanilla NEID mixi reads them for saving.
+     * DO NOT sync MemSlot → NEID arrays before save!
+     *
+     * Reason: MemSlot only stores 4-bit metadata, but NEID arrays store full 16-bit metadata. Syncing would OVERWRITE
+     * 16-bit metadata with 4-bit values, losing extended metadata!
+     *
+     * NEID arrays are already populated: 1. Worldgen chunks: removeInvalidBlocks() syncs MemSlot→NEID at load time 2.
+     * Modified chunks: setBlockId/setExtBlockMetadata write directly to NEID arrays
+     *
+     * So we can safely read from NEID arrays without syncing from MemSlot!
      */
-    @Inject(method = "writeChunkToNBT", at = @At("HEAD"), require = 0)
-    private void neid$syncFromMemSlotBeforeSave(Chunk chunk, World world, NBTTagCompound nbt, CallbackInfo ci) {
-        LOGGER.info("Syncing MemSlot → NEID arrays before save for chunk ({}, {})", chunk.xPosition, chunk.zPosition);
-
-        try {
-            // Get all ExtendedBlockStorage sections
-            java.lang.reflect.Method getBlockStorageArray = chunk.getClass().getMethod("func_76587_i"); // getBlockStorageArray()
-            ExtendedBlockStorage[] ebsArray = (ExtendedBlockStorage[]) getBlockStorageArray.invoke(chunk);
-
-            int syncedSections = 0;
-
-            for (int i = 0; i < ebsArray.length; i++) {
-                ExtendedBlockStorage ebs = ebsArray[i];
-                if (ebs == null) continue;
-
-                // Sync MemSlot → NEID arrays for this section
-                syncMemSlotToNeidArrays(ebs);
-                syncedSections++;
-            }
-
-            LOGGER.info("Synced {} sections from MemSlot to NEID arrays", syncedSections);
-
-        } catch (Exception e) {
-            LOGGER.error("Failed to sync MemSlot before save", e);
-        }
-    }
 
     /**
-     * CRITICAL: After loading chunk from NBT, sync MemSlot → NEID arrays! Ultramine loads vanilla "Blocks"/"Add"/"Data"
-     * tags directly into MemSlot, bypassing NEID initialization. This leaves NEID arrays EMPTY! We must sync MemSlot →
-     * NEID so that subsequent ChunkSnapshot.deflate() can read from NEID arrays.
+     * CRITICAL: After loading chunk from NBT, load extended metadata from "Data16"! Ultramine loads vanilla
+     * "Blocks"/"Add"/"Data" (4-bit metadata) into MemSlot, bypassing NEID's @Redirect. The base NEID @Inject in
+     * removeInvalidBlocks() will sync MemSlot→NEID arrays (4-bit metadata). Then we must load "Data16" to restore
+     * extended (16-bit) metadata into NEID arrays!
      */
     @Inject(method = "readChunkFromNBT", at = @At("RETURN"), require = 0)
-    private void neid$syncFromMemSlotAfterLoad(net.minecraft.world.World world, net.minecraft.nbt.NBTTagCompound nbt,
+    private void neid$loadExtendedMetadataAfterLoad(net.minecraft.world.World world,
+            net.minecraft.nbt.NBTTagCompound nbt,
             org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable<Chunk> cir) {
         Chunk chunk = cir.getReturnValue();
         if (chunk == null) return;
 
-        LOGGER.info("Syncing MemSlot → NEID arrays after LOAD for chunk ({}, {})", chunk.xPosition, chunk.zPosition);
+        LOGGER.info("Loading extended metadata from Data16 for chunk ({}, {})", chunk.xPosition, chunk.zPosition);
 
         try {
+            net.minecraft.nbt.NBTTagList sectionList = nbt.getTagList("Sections", 10);
             ExtendedBlockStorage[] ebsArray = chunk.getBlockStorageArray();
-            int syncedSections = 0;
+            int loadedSections = 0;
 
-            for (ExtendedBlockStorage ebs : ebsArray) {
-                if (ebs != null) {
-                    syncMemSlotToNeidArrays(ebs);
-                    syncedSections++;
-                }
-            }
+            for (int i = 0; i < sectionList.tagCount(); i++) {
+                net.minecraft.nbt.NBTTagCompound sectionNbt = sectionList.getCompoundTagAt(i);
+                byte yLevel = sectionNbt.getByte("Y");
 
-            LOGGER.info("Synced {} sections from MemSlot to NEID arrays after LOAD", syncedSections);
+                if (yLevel >= 0 && yLevel < ebsArray.length && ebsArray[yLevel] != null) {
+                    ExtendedBlockStorage ebs = ebsArray[yLevel];
 
-        } catch (Exception e) {
-            LOGGER.error("Failed to sync MemSlot after load", e);
-        }
-    }
-
-    /**
-     * Synchronizes MemSlot data TO NEID arrays for saving. Reads from MemSlot using reflection and writes to NEID
-     * arrays.
-     */
-    private void syncMemSlotToNeidArrays(ExtendedBlockStorage ebs) {
-        try {
-            IExtendedBlockStorageMixin ebsMixin = (IExtendedBlockStorageMixin) ebs;
-            short[] targetBlockArray = ebsMixin.getBlock16BArray();
-            short[] targetMetaArray = ebsMixin.getBlock16BMetaArray();
-
-            if (targetBlockArray == null || targetMetaArray == null) {
-                LOGGER.warn("NEID arrays are null, cannot sync from MemSlot");
-                return;
-            }
-
-            // Get MemSlot from the EBS
-            java.lang.reflect.Field slotField = ExtendedBlockStorage.class.getDeclaredField("slot");
-            slotField.setAccessible(true);
-            Object slot = slotField.get(ebs);
-
-            if (slot == null) {
-                LOGGER.warn("EBS has null MemSlot, cannot sync");
-                return;
-            }
-
-            // Get methods from MemSlot
-            Class<?> slotClass = slot.getClass();
-            java.lang.reflect.Method getBlockIdMethod = slotClass
-                    .getMethod("getBlockId", int.class, int.class, int.class);
-            java.lang.reflect.Method getMetaMethod = slotClass.getMethod("getMeta", int.class, int.class, int.class);
-
-            int nonAirBlocks = 0;
-
-            // Sync all blocks: MemSlot → NEID arrays (y→z→x order to match index calculation)
-            for (int y = 0; y < 16; y++) {
-                for (int z = 0; z < 16; z++) {
-                    for (int x = 0; x < 16; x++) {
-                        int index = y << 8 | z << 4 | x;
-                        int blockId = (int) getBlockIdMethod.invoke(slot, x, y, z);
-                        int meta = (int) getMetaMethod.invoke(slot, x, y, z);
-                        targetBlockArray[index] = (short) (blockId & 0xFFFF);
-                        targetMetaArray[index] = (short) (meta & 0xFFFF);
-
-                        if (blockId != 0) {
-                            nonAirBlocks++;
-                        }
+                    // Load "Data16" if present (16-bit extended metadata)
+                    if (sectionNbt.hasKey("Data16")) {
+                        IExtendedBlockStorageMixin ebsMixin = (IExtendedBlockStorageMixin) ebs;
+                        byte[] data16 = sectionNbt.getByteArray("Data16");
+                        ebsMixin.setBlockMeta(data16, 0);
+                        loadedSections++;
+                        LOGGER.debug("Loaded Data16 for section Y={}, length={}", yLevel, data16.length);
                     }
                 }
             }
 
-            LOGGER.debug("Synced MemSlot→NEID: {} non-air blocks", nonAirBlocks);
-        } catch (NoSuchFieldException e) {
-            LOGGER.error("MemSlot field not found", e);
-        } catch (NoSuchMethodException e) {
-            LOGGER.error("Failed to find MemSlot methods", e);
+            LOGGER.info("Loaded extended metadata for {} sections", loadedSections);
+
         } catch (Exception e) {
-            LOGGER.error("Failed to sync MemSlot to NEID arrays", e);
+            LOGGER.error("Failed to load extended metadata", e);
         }
     }
 
