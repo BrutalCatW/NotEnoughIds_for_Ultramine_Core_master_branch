@@ -59,10 +59,35 @@ public class MixinAnvilChunkLoaderUltramine {
     }
 
     /**
-     * DO NOT sync after load! Ultramine already loads vanilla "Blocks"/"Add"/"Data" tags directly into MemSlot via
-     * slot.setData(). Vanilla NEID redirects DON'T run (no instanceof EbsSaveFakeNbt after disk load), so NEID arrays
-     * are EMPTY. Syncing would OVERWRITE correct MemSlot data with empty NEID arrays!
+     * CRITICAL: After loading chunk from NBT, sync MemSlot → NEID arrays! Ultramine loads vanilla "Blocks"/"Add"/"Data"
+     * tags directly into MemSlot, bypassing NEID initialization. This leaves NEID arrays EMPTY! We must sync MemSlot →
+     * NEID so that subsequent ChunkSnapshot.deflate() can read from NEID arrays.
      */
+    @Inject(method = "readChunkFromNBT", at = @At("RETURN"), require = 0)
+    private void neid$syncFromMemSlotAfterLoad(net.minecraft.world.World world, net.minecraft.nbt.NBTTagCompound nbt,
+            org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable<Chunk> cir) {
+        Chunk chunk = cir.getReturnValue();
+        if (chunk == null) return;
+
+        LOGGER.info("Syncing MemSlot → NEID arrays after LOAD for chunk ({}, {})", chunk.xPosition, chunk.zPosition);
+
+        try {
+            ExtendedBlockStorage[] ebsArray = chunk.getBlockStorageArray();
+            int syncedSections = 0;
+
+            for (ExtendedBlockStorage ebs : ebsArray) {
+                if (ebs != null) {
+                    syncMemSlotToNeidArrays(ebs);
+                    syncedSections++;
+                }
+            }
+
+            LOGGER.info("Synced {} sections from MemSlot to NEID arrays after LOAD", syncedSections);
+
+        } catch (Exception e) {
+            LOGGER.error("Failed to sync MemSlot after load", e);
+        }
+    }
 
     /**
      * Synchronizes MemSlot data TO NEID arrays for saving. Reads from MemSlot using reflection and writes to NEID

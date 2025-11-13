@@ -65,35 +65,45 @@ public class MixinEbsSaveFakeNbt {
         // Write Y position
         ((net.minecraft.nbt.NBTTagCompound) (Object) this).setByte("Y", (byte) (ebs.getYLocation() >> 4 & 255));
 
-        // CRITICAL: Ultramine's ExtendedBlockStorage.setBlockId() writes DIRECTLY to MemSlot, NOT to NEID arrays!
-        // NEID arrays are ALWAYS EMPTY with ultramine. Must read DIRECTLY from MemSlot, like original write() does.
+        // CRITICAL FIX: When EbsSaveFakeNbt is created from copy(), the MemSlot is RELEASED!
+        // But syncMemSlotToNeidArrays() has already populated NEID arrays before release.
+        // So we MUST read from NEID arrays, NOT from released MemSlot!
 
         try {
-            // Get MemSlot
-            java.lang.reflect.Field slotField = ExtendedBlockStorage.class.getDeclaredField("slot");
-            slotField.setAccessible(true);
-            Object slot = slotField.get(ebs);
+            // CRITICAL FIX: Read from NEID arrays, NOT from released MemSlot!
+            // When copy() is called, MemSlot is released but NEID arrays are populated by syncMemSlotToNeidArrays()
+            com.gtnewhorizons.neid.mixins.interfaces.IExtendedBlockStorageMixin ebsMixin = (com.gtnewhorizons.neid.mixins.interfaces.IExtendedBlockStorageMixin) ebs;
+            short[] block16BArray = ebsMixin.getBlock16BArray();
+            short[] block16BMetaArray = ebsMixin.getBlock16BMetaArray();
 
-            if (slot == null) {
-                LOGGER.error("MemSlot is null, cannot write NBT!");
+            if (block16BArray == null || block16BMetaArray == null) {
+                LOGGER.error("NEID arrays are null, cannot write NBT!");
                 return;
             }
 
-            Class<?> slotClass = slot.getClass();
+            // Convert NEID 16-bit arrays to vanilla 8-bit format for ultramine
+            byte[] lsbData = new byte[4096];
+            byte[] msbData = new byte[2048];
+            byte[] vanillaMetaData = new byte[2048];
 
-            // Read vanilla format arrays from MemSlot (like original EbsSaveFakeNbt.write())
-            java.lang.reflect.Method copyLSBMethod = slotClass.getMethod("copyLSB");
-            java.lang.reflect.Method copyMSBMethod = slotClass.getMethod("copyMSB");
-            java.lang.reflect.Method copyMetaMethod = slotClass.getMethod("copyBlockMetadata");
-
-            byte[] lsbData = (byte[]) copyLSBMethod.invoke(slot);
-            byte[] msbData = (byte[]) copyMSBMethod.invoke(slot);
-            byte[] vanillaMetaData = (byte[]) copyMetaMethod.invoke(slot);
-
-            // Count non-zero blocks to verify MemSlot has data
+            // Convert from NEID 16-bit coordinate arrays to vanilla 8-bit coordinate arrays
             int nonZeroBlocks = 0;
-            for (int i = 0; i < lsbData.length; i++) {
-                if (lsbData[i] != 0) nonZeroBlocks++;
+            for (int y = 0; y < 16; y++) {
+                for (int z = 0; z < 16; z++) {
+                    for (int x = 0; x < 16; x++) {
+                        // Read from NEID arrays (coordinate order: y<<8|z<<4|x)
+                        int coordIndex = y << 8 | z << 4 | x;
+                        int blockId = block16BArray[coordIndex] & 0xFFFF;
+                        int meta = block16BMetaArray[coordIndex] & 0xFFFF;
+
+                        if (blockId != 0) nonZeroBlocks++;
+
+                        // Write to vanilla arrays (same coordinate order)
+                        lsbData[coordIndex] = (byte) (blockId & 0xFF);
+                        set4bitsCoordinate(msbData, x, y, z, (blockId >> 8) & 0xF);
+                        set4bitsCoordinate(vanillaMetaData, x, y, z, meta & 0xF);
+                    }
+                }
             }
 
             // Write vanilla format (REQUIRED for ultramine to load)
@@ -102,7 +112,7 @@ public class MixinEbsSaveFakeNbt {
             ((net.minecraft.nbt.NBTTagCompound) (Object) this).setByteArray("Data", vanillaMetaData);
 
             LOGGER.info(
-                    "Wrote vanilla format from MemSlot: Blocks={} (first 4: {} {} {} {}), Add={}, Data={}, nonZero={}",
+                    "Wrote vanilla format from NEID arrays: Blocks={} (first 4: {} {} {} {}), Add={}, Data={}, nonZero={}",
                     lsbData.length,
                     lsbData[0] & 0xFF,
                     lsbData[1] & 0xFF,
@@ -112,28 +122,26 @@ public class MixinEbsSaveFakeNbt {
                     vanillaMetaData.length,
                     nonZeroBlocks);
 
-            // Also convert to NEID 16-bit format for compatibility
+            // Also write NEID 16-bit format (uses linear order for ByteBuffer compatibility)
             byte[] blocks16 = new byte[4096 * 2];
             byte[] data16 = new byte[4096 * 2];
 
-            for (int i = 0; i < 4096; i++) {
-                int y = (i >> 8) & 0xF;
-                int z = (i >> 4) & 0xF;
-                int x = i & 0xF;
+            int linearIndex = 0;
+            for (int y = 0; y < 16; y++) {
+                for (int z = 0; z < 16; z++) {
+                    for (int x = 0; x < 16; x++) {
+                        int coordIndex = y << 8 | z << 4 | x;
+                        int blockId = block16BArray[coordIndex] & 0xFFFF;
+                        int meta = block16BMetaArray[coordIndex] & 0xFFFF;
 
-                // Get block ID from LSB + MSB
-                int lsb = lsbData[i] & 0xFF;
-                int msb = get4bitsCoordinate(msbData, x, y, z);
-                int blockId = (msb << 8) | lsb;
-
-                // Get metadata
-                int meta = get4bitsCoordinate(vanillaMetaData, x, y, z);
-
-                // Write as 16-bit (little-endian)
-                blocks16[i * 2] = (byte) (blockId & 0xFF);
-                blocks16[i * 2 + 1] = (byte) ((blockId >> 8) & 0xFF);
-                data16[i * 2] = (byte) (meta & 0xFF);
-                data16[i * 2 + 1] = 0;
+                        // Write as 16-bit (little-endian) in linear order for ByteBuffer
+                        blocks16[linearIndex * 2] = (byte) (blockId & 0xFF);
+                        blocks16[linearIndex * 2 + 1] = (byte) ((blockId >> 8) & 0xFF);
+                        data16[linearIndex * 2] = (byte) (meta & 0xFF);
+                        data16[linearIndex * 2 + 1] = 0;
+                        linearIndex++;
+                    }
+                }
             }
 
             ((net.minecraft.nbt.NBTTagCompound) (Object) this).setByteArray("Blocks16", blocks16);
@@ -192,5 +200,19 @@ public class MixinEbsSaveFakeNbt {
         int ind = y << 8 | z << 4 | x;
         byte b = arr[ind >> 1];
         return (ind & 1) == 0 ? (b & 0xF) : ((b >> 4) & 0xF);
+    }
+
+    /**
+     * Writes a 4-bit nibble to coordinate-ordered nibble array. Ultramine nibble arrays are packed in coordinate order:
+     * y << 8 | z << 4 | x
+     */
+    private static void set4bitsCoordinate(byte[] arr, int x, int y, int z, int value) {
+        int ind = y << 8 | z << 4 | x;
+        int nibbleIndex = ind >> 1;
+        if ((ind & 1) == 0) {
+            arr[nibbleIndex] = (byte) ((arr[nibbleIndex] & 0xF0) | (value & 0xF));
+        } else {
+            arr[nibbleIndex] = (byte) ((arr[nibbleIndex] & 0x0F) | ((value & 0xF) << 4));
+        }
     }
 }

@@ -26,19 +26,38 @@ public abstract class MixinExtendedBlockStorageUltramine {
     private static final boolean DEBUG = Boolean.getBoolean("neid.ultramine.debug");
 
     // Shadow fields from base NEID mixin
-    // These fields are added by MixinExtendedBlockStorage
-    @Shadow(remap = false)
-    private short[] block16BArray;
+    @Shadow
+    private int blockRefCount;
 
-    @Shadow(remap = false)
-    private short[] block16BMetaArray;
+    @Shadow
+    private int tickRefCount;
 
     /**
-     * No-op: Ultramine writes DIRECTLY to MemSlot (not NEID arrays), so no sync needed before copy().
+     * DIAGNOSTIC: Log ORIGINAL MemSlot state before copy() to verify it has data.
      */
     @Inject(method = "copy", at = @At("HEAD"), remap = false, require = 0)
     private void neid$syncBeforeCopy(CallbackInfoReturnable<ExtendedBlockStorage> cir) {
-        // No-op: MemSlot already has correct data from ultramine's setBlockId()
+        try {
+            java.lang.reflect.Field slotField = ExtendedBlockStorage.class.getDeclaredField("slot");
+            slotField.setAccessible(true);
+            Object slot = slotField.get(this);
+
+            if (slot != null) {
+                Class<?> slotClass = slot.getClass();
+                java.lang.reflect.Method getBlockIdMethod = slotClass
+                        .getMethod("getBlockId", int.class, int.class, int.class);
+                int origTest = (int) getBlockIdMethod.invoke(slot, 0, 0, 0);
+
+                LOGGER.info(
+                        "[COPY-BEFORE] ORIGINAL MemSlot: slot={}, block(0,0,0)={}",
+                        slotClass.getSimpleName(),
+                        origTest);
+            } else {
+                LOGGER.warn("[COPY-BEFORE] ORIGINAL MemSlot is NULL!");
+            }
+        } catch (Exception e) {
+            LOGGER.error("[COPY-BEFORE] Failed to check original MemSlot", e);
+        }
     }
 
     /**
@@ -49,8 +68,38 @@ public abstract class MixinExtendedBlockStorageUltramine {
     @Inject(method = "copy", at = @At("RETURN"), remap = false, require = 0)
     private void neid$syncFromMemSlotAfterCopy(CallbackInfoReturnable<ExtendedBlockStorage> cir) {
         ExtendedBlockStorage copy = cir.getReturnValue();
+
+        // DIAGNOSTIC: Check blockRefCount and isEmpty()
+        int origBlockRefCount = this.blockRefCount;
+        boolean origIsEmpty = ((ExtendedBlockStorage) (Object) this).isEmpty();
+        int copyBlockRefCount = -1;
+        boolean copyIsEmpty = true;
+
+        if (copy != null) {
+            // Get blockRefCount from copy via reflection (safer than casting)
+            try {
+                java.lang.reflect.Field blockRefCountField = ExtendedBlockStorage.class
+                        .getDeclaredField("blockRefCount");
+                blockRefCountField.setAccessible(true);
+                copyBlockRefCount = blockRefCountField.getInt(copy);
+            } catch (Exception e) {
+                LOGGER.debug("[COPY] Could not read copy blockRefCount: {}", e.getMessage());
+            }
+            copyIsEmpty = copy.isEmpty();
+        }
+
+        LOGGER.info(
+                "[COPY] orig: blockRefCount={}, isEmpty={}; copy: blockRefCount={}, isEmpty={}",
+                origBlockRefCount,
+                origIsEmpty,
+                copyBlockRefCount,
+                copyIsEmpty);
+
         if (copy != null && copy != (Object) this) {
+            LOGGER.info("[COPY] Calling syncMemSlotToNeidArrays for copy");
             syncMemSlotToNeidArrays(copy);
+        } else {
+            LOGGER.warn("[COPY] Skipped sync: copy={}, same={}", copy != null, copy == (Object) this);
         }
     }
 
@@ -62,6 +111,17 @@ public abstract class MixinExtendedBlockStorageUltramine {
         int ind = y << 8 | z << 4 | x;
         byte b = arr[ind >> 1];
         return (ind & 1) == 0 ? (b & 0xF) : ((b >> 4) & 0xF);
+    }
+
+    /**
+     * CRITICAL: Before removeInvalidBlocks() reads from NEID arrays, sync FROM MemSlot! After loading from NBT,
+     * ultramine calls setData() which populates MemSlot, then calls removeInvalidBlocks(). But base NEID's @Overwrite
+     * removeInvalidBlocks() reads from block16BArray (NOT MemSlot)! So we must sync MemSlot→NEID arrays BEFORE
+     * removeInvalidBlocks() runs!
+     */
+    @Inject(method = "removeInvalidBlocks", at = @At("HEAD"), require = 0)
+    private void neid$syncFromMemSlotBeforeRemoveInvalidBlocks(CallbackInfo ci) {
+        syncMemSlotToNeidArrays((ExtendedBlockStorage) (Object) this);
     }
 
     /**
@@ -100,6 +160,10 @@ public abstract class MixinExtendedBlockStorageUltramine {
      * still receives full 16-bit block IDs
      */
     private void syncNeidArraysToMemSlot() {
+        IExtendedBlockStorageMixin thisMixin = (IExtendedBlockStorageMixin) this;
+        short[] block16BArray = thisMixin.getBlock16BArray();
+        short[] block16BMetaArray = thisMixin.getBlock16BMetaArray();
+
         if (block16BArray == null || block16BMetaArray == null) {
             if (DEBUG) {
                 LOGGER.warn("NEID arrays are null, skipping sync");
@@ -223,6 +287,35 @@ public abstract class MixinExtendedBlockStorageUltramine {
             Class<?> slotClass = slot.getClass();
             java.lang.reflect.Method getBlockIdMethod = slotClass
                     .getMethod("getBlockId", int.class, int.class, int.class);
+
+            // DIAGNOSTIC: Check if MemSlot actually has data at multiple positions
+            int test000 = (int) getBlockIdMethod.invoke(slot, 0, 0, 0);
+            int test555 = (int) getBlockIdMethod.invoke(slot, 5, 5, 5);
+            int test151515 = (int) getBlockIdMethod.invoke(slot, 15, 15, 15);
+
+            // Get pointer and isReleased for ultramine MemSlot
+            long pointer = -1;
+            boolean isReleased = true;
+            try {
+                java.lang.reflect.Method getPointerMethod = slotClass.getDeclaredMethod("getPointer");
+                getPointerMethod.setAccessible(true);
+                pointer = (long) getPointerMethod.invoke(slot);
+
+                java.lang.reflect.Field isReleasedField = slotClass.getSuperclass().getDeclaredField("isReleased");
+                isReleasedField.setAccessible(true);
+                isReleased = (boolean) isReleasedField.get(slot);
+            } catch (Exception e) {
+                // Ignore
+            }
+
+            LOGGER.info(
+                    "[SYNC] MemSlot: slot={}, ptr=0x{}, released={}, (0,0,0)={}, (5,5,5)={}, (15,15,15)={}",
+                    slotClass.getSimpleName(),
+                    Long.toHexString(pointer),
+                    isReleased,
+                    test000,
+                    test555,
+                    test151515);
             java.lang.reflect.Method getMetaMethod = slotClass.getMethod("getMeta", int.class, int.class, int.class);
 
             // Sample for logging
@@ -230,17 +323,17 @@ public abstract class MixinExtendedBlockStorageUltramine {
             int sampleBlockId = -1;
             int sampleX = -1, sampleY = -1, sampleZ = -1;
 
-            // CRITICAL FIX: NEID arrays are LINEAR (0,1,2,3...), NOT coordinate-based!
-            // Iterate y→z→x to create sequential linear indices
-            int linearIndex = 0;
+            // CRITICAL FIX: NEID arrays use COORDINATE indexing (y<<8|z<<4|x), NOT sequential!
+            // Base NEID's getBlockId/setBlockId/removeInvalidBlocks all use coordinate indexing!
             for (int y = 0; y < 16; y++) {
                 for (int z = 0; z < 16; z++) {
                     for (int x = 0; x < 16; x++) {
                         int blockId = (int) getBlockIdMethod.invoke(slot, x, y, z);
                         int meta = (int) getMetaMethod.invoke(slot, x, y, z);
-                        targetBlockArray[linearIndex] = (short) (blockId & 0xFFFF);
-                        targetMetaArray[linearIndex] = (short) (meta & 0xFFFF);
-                        linearIndex++;
+
+                        int coordIndex = y << 8 | z << 4 | x;
+                        targetBlockArray[coordIndex] = (short) (blockId & 0xFFFF);
+                        targetMetaArray[coordIndex] = (short) (meta & 0xFFFF);
 
                         // Sample for debug
                         if (blockId != 0) {

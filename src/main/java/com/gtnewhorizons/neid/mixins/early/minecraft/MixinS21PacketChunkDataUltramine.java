@@ -311,10 +311,12 @@ public abstract class MixinS21PacketChunkDataUltramine {
         LOGGER.info("@@@ INJECT deflate() - converting ChunkSnapshot to NEID 16-bit!");
 
         java.util.zip.Deflater deflater = new java.util.zip.Deflater(7);
+        LOGGER.info("[DEFLATE] Step 1: Created Deflater");
         try {
             // Get ExtendedBlockStorage[] from ChunkSnapshot
             ExtendedBlockStorage[] ebsArr = (ExtendedBlockStorage[]) chunkSnapshot.getClass().getMethod("getEbsArr")
                     .invoke(chunkSnapshot);
+            LOGGER.info("[DEFLATE] Step 2: Got ebsArr, length={}", ebsArr != null ? ebsArr.length : "null");
 
             // Calculate mask
             int mask = 0;
@@ -322,9 +324,11 @@ public abstract class MixinS21PacketChunkDataUltramine {
                 ExtendedBlockStorage ebs = ebsArr[i];
                 if (ebs != null && !ebs.isEmpty()) mask |= 1 << i;
             }
+            LOGGER.info("[DEFLATE] Step 3: Calculated mask=0x{}", Integer.toHexString(mask));
 
             if (mask == 0) {
                 // Empty chunk
+                LOGGER.info("[DEFLATE] Step 4: Empty chunk, returning");
                 byte[] EMPTY_CHUNK_SEQUENCE = { 120, -38, -19, -65, 49, 1, 0, 0, 0, -62, -96, -11, 79, 109, 13, 15, -96,
                         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, -128, 119, 3, 48, 0, 0, 1 };
                 this.field_149281_e = EMPTY_CHUNK_SEQUENCE;
@@ -336,10 +340,14 @@ public abstract class MixinS21PacketChunkDataUltramine {
 
             // Create NEID 16-bit format data
             int ebsCount = Integer.bitCount(mask);
+            LOGGER.info("[DEFLATE] Step 4: ebsCount={}", ebsCount);
             boolean hasNoSky = (boolean) chunkSnapshot.getClass().getMethod("isWorldHasNoSky").invoke(chunkSnapshot);
+            LOGGER.info("[DEFLATE] Step 5: hasNoSky={}", hasNoSky);
             byte[] biomeArray = (byte[]) chunkSnapshot.getClass().getMethod("getBiomeArray").invoke(chunkSnapshot);
+            LOGGER.info("[DEFLATE] Step 6: biomeArray.length={}", biomeArray != null ? biomeArray.length : "null");
 
             int totalSize = ebsCount * Constants.BYTES_PER_EBS + biomeArray.length;
+            LOGGER.info("[DEFLATE] Step 7: totalSize={}", totalSize);
             byte[] data = new byte[totalSize];
             int offset = 0;
 
