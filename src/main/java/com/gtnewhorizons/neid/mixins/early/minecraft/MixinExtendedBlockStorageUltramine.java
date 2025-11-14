@@ -288,57 +288,41 @@ public abstract class MixinExtendedBlockStorageUltramine {
                 return;
             }
 
-            // Get methods from MemSlot
+            // PERFORMANCE OPTIMIZATION: Use bulk copy instead of 8192 reflection calls!
+            // Copy LSB, MSB, and metadata arrays directly from MemSlot
             Class<?> slotClass = slot.getClass();
-            java.lang.reflect.Method getBlockIdMethod = slotClass
-                    .getMethod("getBlockId", int.class, int.class, int.class);
+            java.lang.reflect.Method copyLSBMethod = slotClass.getMethod("copyLSB", byte[].class);
+            java.lang.reflect.Method copyMSBMethod = slotClass.getMethod("copyMSB", byte[].class);
+            java.lang.reflect.Method copyMetaMethod = slotClass.getMethod("copyBlockMetadata", byte[].class);
 
-            // DEBUG: Uncomment for debugging MemSlot state
-            /*
-             * // DIAGNOSTIC: Check if MemSlot actually has data at multiple positions int test000 = (int)
-             * getBlockIdMethod.invoke(slot, 0, 0, 0); int test555 = (int) getBlockIdMethod.invoke(slot, 5, 5, 5); int
-             * test151515 = (int) getBlockIdMethod.invoke(slot, 15, 15, 15); // Get pointer and isReleased for ultramine
-             * MemSlot long pointer = -1; boolean isReleased = true; try { java.lang.reflect.Method getPointerMethod =
-             * slotClass.getDeclaredMethod("getPointer"); getPointerMethod.setAccessible(true); pointer = (long)
-             * getPointerMethod.invoke(slot); java.lang.reflect.Field isReleasedField =
-             * slotClass.getSuperclass().getDeclaredField("isReleased"); isReleasedField.setAccessible(true); isReleased
-             * = (boolean) isReleasedField.get(slot); } catch (Exception e) { // Ignore } LOGGER.info(
-             * "[SYNC] MemSlot: slot={}, ptr=0x{}, released={}, (0,0,0)={}, (5,5,5)={}, (15,15,15)={}",
-             * slotClass.getSimpleName(), Long.toHexString(pointer), isReleased, test000, test555, test151515);
-             */
-            java.lang.reflect.Method getMetaMethod = slotClass.getMethod("getMeta", int.class, int.class, int.class);
+            byte[] lsb = new byte[4096];
+            byte[] msb = new byte[2048];
+            byte[] meta = new byte[2048];
 
-            // DEBUG: Uncomment for sampling and logging
-            // int nonAirBlocks = 0;
-            // int sampleBlockId = -1;
-            // int sampleX = -1, sampleY = -1, sampleZ = -1;
+            copyLSBMethod.invoke(slot, lsb);
+            copyMSBMethod.invoke(slot, msb);
+            copyMetaMethod.invoke(slot, meta);
 
-            // CRITICAL FIX: NEID arrays use COORDINATE indexing (y<<8|z<<4|x), NOT sequential!
-            // Base NEID's getBlockId/setBlockId/removeInvalidBlocks all use coordinate indexing!
+            // Convert from coordinate-ordered vanilla arrays to NEID coordinate-indexed arrays
+            // OPTIMIZATION: Process in coordinate order for both LSB and nibbles
             for (int y = 0; y < 16; y++) {
                 for (int z = 0; z < 16; z++) {
                     for (int x = 0; x < 16; x++) {
-                        int blockId = (int) getBlockIdMethod.invoke(slot, x, y, z);
-                        int meta = (int) getMetaMethod.invoke(slot, x, y, z);
-
                         int coordIndex = y << 8 | z << 4 | x;
-                        targetBlockArray[coordIndex] = (short) (blockId & 0xFFFF);
-                        targetMetaArray[coordIndex] = (short) (meta & 0xFFFF);
 
-                        // DEBUG: Uncomment for sampling
-                        /*
-                         * if (blockId != 0) { nonAirBlocks++; if (sampleBlockId == -1) { sampleBlockId = blockId;
-                         * sampleX = x; sampleY = y; sampleZ = z; } }
-                         */
+                        // LSB is already in coordinate order - direct read
+                        int lsbVal = lsb[coordIndex] & 0xFF;
+
+                        // MSB and metadata are nibble arrays - extract 4-bit values
+                        int msbVal = get4bitsCoordinate(msb, x, y, z);
+                        int metaVal = get4bitsCoordinate(meta, x, y, z);
+
+                        // Combine LSB + MSB into 16-bit block ID
+                        targetBlockArray[coordIndex] = (short) ((msbVal << 8) | lsbVal);
+                        targetMetaArray[coordIndex] = (short) metaVal;
                     }
                 }
             }
-
-            // DEBUG: Uncomment for logging
-            /*
-             * LOGGER.info( "Synced MemSlot→NEID: {} non-air blocks. Sample: block {} at ({},{},{})", nonAirBlocks,
-             * sampleBlockId, sampleX, sampleY, sampleZ);
-             */
         } catch (NoSuchFieldException e) {
             LOGGER.error("MemSlot field not found", e);
         } catch (NoSuchMethodException e) {
