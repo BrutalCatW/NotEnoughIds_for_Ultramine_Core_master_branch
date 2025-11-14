@@ -32,6 +32,11 @@ public abstract class MixinExtendedBlockStorageUltramine {
     @Shadow
     private int tickRefCount;
 
+    // PERFORMANCE: Cache reflection methods to avoid repeated lookups
+    private static volatile java.lang.reflect.Field cachedSlotField;
+    private static volatile java.lang.reflect.Method cachedSetBlockIdMethod;
+    private static volatile java.lang.reflect.Method cachedSetMetaMethod;
+
     /**
      * DIAGNOSTIC: Log ORIGINAL MemSlot state before copy() to verify it has data. COMMENTED OUT - uncomment for
      * debugging if needed
@@ -111,17 +116,34 @@ public abstract class MixinExtendedBlockStorageUltramine {
 
     /**
      * CRITICAL: Intercept NEID's setBlockId to sync TO ultramine MemSlot! Base NEID @Overwrite's func_150818_a and only
-     * writes to block16BArray. We must sync every block change to MemSlot.
+     * writes to block16BArray. We must sync every block change to MemSlot. PERFORMANCE: Uses cached reflection methods
+     * to avoid repeated lookups.
      */
     @Inject(method = "setBlockId", at = @At("RETURN"), remap = false, require = 0)
     private void neid$syncToMemSlotAfterSetBlock(int x, int y, int z, int id, CallbackInfo ci) {
         try {
-            Object slot = getSlotViaReflection();
+            // Initialize cache on first call
+            if (cachedSlotField == null) {
+                synchronized (MixinExtendedBlockStorageUltramine.class) {
+                    if (cachedSlotField == null) {
+                        cachedSlotField = ExtendedBlockStorage.class.getDeclaredField("slot");
+                        cachedSlotField.setAccessible(true);
+                    }
+                }
+            }
+
+            Object slot = cachedSlotField.get(this);
             if (slot != null) {
-                Class<?> slotClass = slot.getClass();
-                java.lang.reflect.Method setBlockId = slotClass
-                        .getMethod("setBlockId", int.class, int.class, int.class, int.class);
-                setBlockId.invoke(slot, x, y, z, id);
+                // Initialize method cache on first call
+                if (cachedSetBlockIdMethod == null) {
+                    synchronized (MixinExtendedBlockStorageUltramine.class) {
+                        if (cachedSetBlockIdMethod == null) {
+                            cachedSetBlockIdMethod = slot.getClass()
+                                    .getMethod("setBlockId", int.class, int.class, int.class, int.class);
+                        }
+                    }
+                }
+                cachedSetBlockIdMethod.invoke(slot, x, y, z, id);
             }
         } catch (Exception e) {
             // Silently ignore - setBlockId is called very frequently
@@ -131,17 +153,35 @@ public abstract class MixinExtendedBlockStorageUltramine {
     /**
      * CRITICAL: Intercept NEID's setExtBlockMetadata to sync TO ultramine MemSlot! Base NEID @Overwrite only writes to
      * block16BMetaArray. We must sync metadata changes to MemSlot so that ChunkSnapshot.copy() sees updated values.
+     * PERFORMANCE: Uses cached reflection methods to avoid repeated lookups. NOTE: MemSlot only stores 4-bit metadata,
+     * so values > 15 are truncated. Full 16-bit values are preserved in block16BMetaArray for saving/transmission.
      */
     @Inject(method = "setExtBlockMetadata", at = @At("RETURN"), require = 0)
     private void neid$syncMetaToMemSlotAfterSetMetadata(int x, int y, int z, int meta, CallbackInfo ci) {
         try {
-            Object slot = getSlotViaReflection();
+            // Initialize cache on first call
+            if (cachedSlotField == null) {
+                synchronized (MixinExtendedBlockStorageUltramine.class) {
+                    if (cachedSlotField == null) {
+                        cachedSlotField = ExtendedBlockStorage.class.getDeclaredField("slot");
+                        cachedSlotField.setAccessible(true);
+                    }
+                }
+            }
+
+            Object slot = cachedSlotField.get(this);
             if (slot != null) {
-                Class<?> slotClass = slot.getClass();
-                java.lang.reflect.Method setMeta = slotClass
-                        .getMethod("setMeta", int.class, int.class, int.class, int.class);
-                // Sync full 16-bit metadata to MemSlot (ultramine MemSlot supports 16-bit internally)
-                setMeta.invoke(slot, x, y, z, meta);
+                // Initialize method cache on first call
+                if (cachedSetMetaMethod == null) {
+                    synchronized (MixinExtendedBlockStorageUltramine.class) {
+                        if (cachedSetMetaMethod == null) {
+                            cachedSetMetaMethod = slot.getClass()
+                                    .getMethod("setMeta", int.class, int.class, int.class, int.class);
+                        }
+                    }
+                }
+                // MemSlot only supports 4-bit metadata, truncate to avoid errors
+                cachedSetMetaMethod.invoke(slot, x, y, z, meta & 0xF);
             }
         } catch (Exception e) {
             // Silently ignore - setExtBlockMetadata is called very frequently
@@ -244,13 +284,20 @@ public abstract class MixinExtendedBlockStorageUltramine {
 
     /**
      * Gets the MemSlot field from this ExtendedBlockStorage instance using reflection. The slot field is added by
-     * ultramine, so we can't use @Shadow.
+     * ultramine, so we can't use @Shadow. PERFORMANCE: Uses cached field to avoid repeated lookups.
      */
     private Object getSlotViaReflection() {
         try {
-            java.lang.reflect.Field slotField = ExtendedBlockStorage.class.getDeclaredField("slot");
-            slotField.setAccessible(true);
-            return slotField.get(this);
+            // Initialize cache on first call
+            if (cachedSlotField == null) {
+                synchronized (MixinExtendedBlockStorageUltramine.class) {
+                    if (cachedSlotField == null) {
+                        cachedSlotField = ExtendedBlockStorage.class.getDeclaredField("slot");
+                        cachedSlotField.setAccessible(true);
+                    }
+                }
+            }
+            return cachedSlotField.get(this);
         } catch (NoSuchFieldException e) {
             // Field doesn't exist - not ultramine or different version
             if (DEBUG) {
