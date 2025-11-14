@@ -48,12 +48,14 @@ public class MixinAnvilChunkLoaderUltramine {
         Chunk chunk = cir.getReturnValue();
         if (chunk == null) return;
 
-        LOGGER.info("Loading extended metadata from Data16 for chunk ({}, {})", chunk.xPosition, chunk.zPosition);
+        // DEBUG: Uncomment for debugging
+        // LOGGER.info("Loading extended metadata from Data16 for chunk ({}, {})", chunk.xPosition, chunk.zPosition);
 
         try {
             net.minecraft.nbt.NBTTagList sectionList = nbt.getTagList("Sections", 10);
             ExtendedBlockStorage[] ebsArray = chunk.getBlockStorageArray();
-            int loadedSections = 0;
+            // DEBUG: Uncomment for counting loaded sections
+            // int loadedSections = 0;
 
             for (int i = 0; i < sectionList.tagCount(); i++) {
                 net.minecraft.nbt.NBTTagCompound sectionNbt = sectionList.getCompoundTagAt(i);
@@ -67,13 +69,16 @@ public class MixinAnvilChunkLoaderUltramine {
                         IExtendedBlockStorageMixin ebsMixin = (IExtendedBlockStorageMixin) ebs;
                         byte[] data16 = sectionNbt.getByteArray("Data16");
                         ebsMixin.setBlockMeta(data16, 0);
-                        loadedSections++;
-                        LOGGER.debug("Loaded Data16 for section Y={}, length={}", yLevel, data16.length);
+                        // DEBUG: Uncomment for counting
+                        // loadedSections++;
+                        // DEBUG: Uncomment for debugging
+                        // LOGGER.debug("Loaded Data16 for section Y={}, length={}", yLevel, data16.length);
                     }
                 }
             }
 
-            LOGGER.info("Loaded extended metadata for {} sections", loadedSections);
+            // DEBUG: Uncomment for debugging
+            // LOGGER.info("Loaded extended metadata for {} sections", loadedSections);
 
         } catch (Exception e) {
             LOGGER.error("Failed to load extended metadata", e);

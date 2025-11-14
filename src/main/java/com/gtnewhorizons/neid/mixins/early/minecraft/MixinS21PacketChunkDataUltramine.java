@@ -50,12 +50,11 @@ public abstract class MixinS21PacketChunkDataUltramine {
     public static S21PacketChunkData.Extracted func_149269_a(net.minecraft.world.chunk.Chunk chunk, boolean fullChunk,
             int sectionMask) {
         try {
-            LOGGER.info(
-                    "==== NEID func_149269_a() OVERWRITE called! chunk ({},{}), fullChunk={}, mask=0x{}",
-                    chunk.xPosition,
-                    chunk.zPosition,
-                    fullChunk,
-                    Integer.toHexString(sectionMask));
+            // DEBUG: Uncomment for debugging
+            /*
+             * LOGGER.info( "==== NEID func_149269_a() OVERWRITE called! chunk ({},{}), fullChunk={}, mask=0x{}",
+             * chunk.xPosition, chunk.zPosition, fullChunk, Integer.toHexString(sectionMask));
+             */
 
             // Use obfuscated names for runtime compatibility
             ExtendedBlockStorage[] ebsArray = (ExtendedBlockStorage[]) chunk.getClass().getMethod("func_76587_i")
@@ -81,10 +80,11 @@ public abstract class MixinS21PacketChunkDataUltramine {
             byte[] neidData = createNeidFormatData(ebsArray, ebsMask, fullChunk, chunk);
             extracted.field_150282_a = neidData;
 
-            LOGGER.info(
-                    "func_149269_a() complete: ebsMask=0x{}, dataSize={}",
-                    Integer.toHexString(ebsMask),
-                    neidData.length);
+            // DEBUG: Uncomment for debugging
+            /*
+             * LOGGER.info( "func_149269_a() complete: ebsMask=0x{}, dataSize={}", Integer.toHexString(ebsMask),
+             * neidData.length);
+             */
             return extracted;
 
         } catch (Exception e) {
@@ -120,7 +120,8 @@ public abstract class MixinS21PacketChunkDataUltramine {
             byte[] data = new byte[totalSize];
             int offset = 0;
 
-            LOGGER.info("Creating NEID format: ebsCount={}, totalSize={}", ebsCount, totalSize);
+            // DEBUG: Uncomment for debugging
+            // LOGGER.info("Creating NEID format: ebsCount={}, totalSize={}", ebsCount, totalSize);
 
             // PHASE 1: Write all blocks (16-bit, 8192 bytes per EBS) - GROUPED
             for (int sectionIndex = 0; sectionIndex < 16; sectionIndex++) {
@@ -135,19 +136,17 @@ public abstract class MixinS21PacketChunkDataUltramine {
                 copyFromSlot(slot, "copyLSB", lsb);
                 copyFromSlot(slot, "copyMSB", msb);
 
-                // DEBUG: Check first few bytes of LSB
-                StringBuilder lsbDebug = new StringBuilder();
-                for (int i = 0; i < Math.min(32, lsb.length); i++) {
-                    lsbDebug.append(String.format("%02X ", lsb[i] & 0xFF));
-                }
-                LOGGER.info(
-                        "EBS section={}, slot={}, first 32 LSB bytes: {}",
-                        sectionIndex,
-                        slot.getClass().getSimpleName(),
-                        lsbDebug.toString());
+                // DEBUG: Uncomment for debugging LSB bytes
+                /*
+                 * StringBuilder lsbDebug = new StringBuilder(); for (int i = 0; i < Math.min(32, lsb.length); i++) {
+                 * lsbDebug.append(String.format("%02X ", lsb[i] & 0xFF)); } LOGGER.info(
+                 * "EBS section={}, slot={}, first 32 LSB bytes: {}", sectionIndex, slot.getClass().getSimpleName(),
+                 * lsbDebug.toString());
+                 */
 
-                int nonZeroBlocks = 0;
-                int blocksWithMSB = 0;
+                // DEBUG: Uncomment for block counting
+                // int nonZeroBlocks = 0;
+                // int blocksWithMSB = 0;
 
                 // CRITICAL: Write in LINEAR order (matching client's ShortBuffer.put())
                 // Index calculation y << 8 | z << 4 | x creates sequential indices 0,1,2,3...
@@ -159,10 +158,10 @@ public abstract class MixinS21PacketChunkDataUltramine {
                             int msbVal = get4bitsCoordinate(msb, x, y, z);
                             int blockId = (msbVal << 8) | lsbVal;
 
-                            if (blockId != 0) {
-                                nonZeroBlocks++;
-                                if (msbVal != 0) blocksWithMSB++;
-                            }
+                            // DEBUG: Uncomment for block counting
+                            /*
+                             * if (blockId != 0) { nonZeroBlocks++; if (msbVal != 0) blocksWithMSB++; }
+                             */
 
                             // Write as big-endian 16-bit
                             data[offset++] = (byte) ((blockId >> 8) & 0xFF);
@@ -171,7 +170,8 @@ public abstract class MixinS21PacketChunkDataUltramine {
                     }
                 }
 
-                LOGGER.info("EBS section={}: nonZero={}, withMSB={}", sectionIndex, nonZeroBlocks, blocksWithMSB);
+                // DEBUG: Uncomment for logging
+                // LOGGER.info("EBS section={}: nonZero={}, withMSB={}", sectionIndex, nonZeroBlocks, blocksWithMSB);
             }
 
             // PHASE 2: Write all metadata (16-bit, 8192 bytes per EBS) - GROUPED
@@ -230,7 +230,8 @@ public abstract class MixinS21PacketChunkDataUltramine {
                 offset += 256;
             }
 
-            LOGGER.info("First 32 bytes: {}", bytesToHex(data, 0, 32));
+            // DEBUG: Uncomment for debugging
+            // LOGGER.info("First 32 bytes: {}", bytesToHex(data, 0, 32));
             return data;
 
         } catch (Exception e) {
@@ -308,15 +309,18 @@ public abstract class MixinS21PacketChunkDataUltramine {
 
         // This IS ultramine path - cancel original and do our NEID 16-bit packing!
         ci.cancel();
-        LOGGER.info("@@@ INJECT deflate() - converting ChunkSnapshot to NEID 16-bit!");
+        // DEBUG: Uncomment for debugging
+        // LOGGER.info("@@@ INJECT deflate() - converting ChunkSnapshot to NEID 16-bit!");
 
         java.util.zip.Deflater deflater = new java.util.zip.Deflater(7);
-        LOGGER.info("[DEFLATE] Step 1: Created Deflater");
+        // DEBUG: Uncomment for debugging
+        // LOGGER.info("[DEFLATE] Step 1: Created Deflater");
         try {
             // Get ExtendedBlockStorage[] from ChunkSnapshot
             ExtendedBlockStorage[] ebsArr = (ExtendedBlockStorage[]) chunkSnapshot.getClass().getMethod("getEbsArr")
                     .invoke(chunkSnapshot);
-            LOGGER.info("[DEFLATE] Step 2: Got ebsArr, length={}", ebsArr != null ? ebsArr.length : "null");
+            // DEBUG: Uncomment for debugging
+            // LOGGER.info("[DEFLATE] Step 2: Got ebsArr, length={}", ebsArr != null ? ebsArr.length : "null");
 
             // Calculate mask
             int mask = 0;
@@ -324,11 +328,13 @@ public abstract class MixinS21PacketChunkDataUltramine {
                 ExtendedBlockStorage ebs = ebsArr[i];
                 if (ebs != null && !ebs.isEmpty()) mask |= 1 << i;
             }
-            LOGGER.info("[DEFLATE] Step 3: Calculated mask=0x{}", Integer.toHexString(mask));
+            // DEBUG: Uncomment for debugging
+            // LOGGER.info("[DEFLATE] Step 3: Calculated mask=0x{}", Integer.toHexString(mask));
 
             if (mask == 0) {
                 // Empty chunk
-                LOGGER.info("[DEFLATE] Step 4: Empty chunk, returning");
+                // DEBUG: Uncomment for debugging
+                // LOGGER.info("[DEFLATE] Step 4: Empty chunk, returning");
                 byte[] EMPTY_CHUNK_SEQUENCE = { 120, -38, -19, -65, 49, 1, 0, 0, 0, -62, -96, -11, 79, 109, 13, 15, -96,
                         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, -128, 119, 3, 48, 0, 0, 1 };
                 this.field_149281_e = EMPTY_CHUNK_SEQUENCE;
@@ -340,21 +346,26 @@ public abstract class MixinS21PacketChunkDataUltramine {
 
             // Create NEID 16-bit format data
             int ebsCount = Integer.bitCount(mask);
-            LOGGER.info("[DEFLATE] Step 4: ebsCount={}", ebsCount);
+            // DEBUG: Uncomment for debugging
+            // LOGGER.info("[DEFLATE] Step 4: ebsCount={}", ebsCount);
             boolean hasNoSky = (boolean) chunkSnapshot.getClass().getMethod("isWorldHasNoSky").invoke(chunkSnapshot);
-            LOGGER.info("[DEFLATE] Step 5: hasNoSky={}", hasNoSky);
+            // DEBUG: Uncomment for debugging
+            // LOGGER.info("[DEFLATE] Step 5: hasNoSky={}", hasNoSky);
             byte[] biomeArray = (byte[]) chunkSnapshot.getClass().getMethod("getBiomeArray").invoke(chunkSnapshot);
-            LOGGER.info("[DEFLATE] Step 6: biomeArray.length={}", biomeArray != null ? biomeArray.length : "null");
+            // DEBUG: Uncomment for debugging
+            // LOGGER.info("[DEFLATE] Step 6: biomeArray.length={}", biomeArray != null ? biomeArray.length : "null");
 
             int totalSize = ebsCount * Constants.BYTES_PER_EBS + biomeArray.length;
-            LOGGER.info("[DEFLATE] Step 7: totalSize={}", totalSize);
+            // DEBUG: Uncomment for debugging
+            // LOGGER.info("[DEFLATE] Step 7: totalSize={}", totalSize);
             byte[] data = new byte[totalSize];
             int offset = 0;
 
-            LOGGER.info(
-                    "INJECT deflate(): Creating NEID 16-bit format - ebsCount={}, mask=0x{}",
-                    ebsCount,
-                    Integer.toHexString(mask));
+            // DEBUG: Uncomment for debugging
+            /*
+             * LOGGER.info( "INJECT deflate(): Creating NEID 16-bit format - ebsCount={}, mask=0x{}", ebsCount,
+             * Integer.toHexString(mask));
+             */
 
             // PHASE 1: Write all 16-bit blocks
             for (int i = 0; i < ebsArr.length; i++) {
@@ -439,11 +450,11 @@ public abstract class MixinS21PacketChunkDataUltramine {
             this.field_149280_d = mask;
             this.field_149283_c = mask;
 
-            LOGGER.info(
-                    "INJECT deflate() complete: rawSize={}, deflatedSize={}, mask=0x{}",
-                    data.length,
-                    deflatedLen,
-                    Integer.toHexString(mask));
+            // DEBUG: Uncomment for debugging
+            /*
+             * LOGGER.info( "INJECT deflate() complete: rawSize={}, deflatedSize={}, mask=0x{}", data.length,
+             * deflatedLen, Integer.toHexString(mask));
+             */
 
         } catch (Exception e) {
             LOGGER.error("INJECT deflate() FAILED!", e);

@@ -33,32 +33,19 @@ public abstract class MixinExtendedBlockStorageUltramine {
     private int tickRefCount;
 
     /**
-     * DIAGNOSTIC: Log ORIGINAL MemSlot state before copy() to verify it has data.
+     * DIAGNOSTIC: Log ORIGINAL MemSlot state before copy() to verify it has data. COMMENTED OUT - uncomment for
+     * debugging if needed
      */
-    @Inject(method = "copy", at = @At("HEAD"), remap = false, require = 0)
-    private void neid$syncBeforeCopy(CallbackInfoReturnable<ExtendedBlockStorage> cir) {
-        try {
-            java.lang.reflect.Field slotField = ExtendedBlockStorage.class.getDeclaredField("slot");
-            slotField.setAccessible(true);
-            Object slot = slotField.get(this);
-
-            if (slot != null) {
-                Class<?> slotClass = slot.getClass();
-                java.lang.reflect.Method getBlockIdMethod = slotClass
-                        .getMethod("getBlockId", int.class, int.class, int.class);
-                int origTest = (int) getBlockIdMethod.invoke(slot, 0, 0, 0);
-
-                LOGGER.info(
-                        "[COPY-BEFORE] ORIGINAL MemSlot: slot={}, block(0,0,0)={}",
-                        slotClass.getSimpleName(),
-                        origTest);
-            } else {
-                LOGGER.warn("[COPY-BEFORE] ORIGINAL MemSlot is NULL!");
-            }
-        } catch (Exception e) {
-            LOGGER.error("[COPY-BEFORE] Failed to check original MemSlot", e);
-        }
-    }
+    /*
+     * @Inject(method = "copy", at = @At("HEAD"), remap = false, require = 0) private void
+     * neid$syncBeforeCopy(CallbackInfoReturnable<ExtendedBlockStorage> cir) { try { java.lang.reflect.Field slotField =
+     * ExtendedBlockStorage.class.getDeclaredField("slot"); slotField.setAccessible(true); Object slot =
+     * slotField.get(this); if (slot != null) { Class<?> slotClass = slot.getClass(); java.lang.reflect.Method
+     * getBlockIdMethod = slotClass .getMethod("getBlockId", int.class, int.class, int.class); int origTest = (int)
+     * getBlockIdMethod.invoke(slot, 0, 0, 0); LOGGER.info( "[COPY-BEFORE] ORIGINAL MemSlot: slot={}, block(0,0,0)={}",
+     * slotClass.getSimpleName(), origTest); } else { LOGGER.warn("[COPY-BEFORE] ORIGINAL MemSlot is NULL!"); } } catch
+     * (Exception e) { LOGGER.error("[COPY-BEFORE] Failed to check original MemSlot", e); } }
+     */
 
     /**
      * CRITICAL: After copy() returns, copy NEID arrays from ORIGINAL to COPY! Ultramine copy() creates new EBS with
@@ -87,7 +74,8 @@ public abstract class MixinExtendedBlockStorageUltramine {
                         System.arraycopy(origBlockArray, 0, copyBlockArray, 0, 4096);
                         System.arraycopy(origMetaArray, 0, copyMetaArray, 0, 4096);
 
-                        LOGGER.debug("[COPY] Copied NEID arrays (16-bit metadata preserved)");
+                        // DEBUG: Uncomment for debugging
+                        // LOGGER.debug("[COPY] Copied NEID arrays (16-bit metadata preserved)");
                     } else {
                         LOGGER.warn("[COPY] Copy NEID arrays are null, cannot copy");
                     }
@@ -305,40 +293,25 @@ public abstract class MixinExtendedBlockStorageUltramine {
             java.lang.reflect.Method getBlockIdMethod = slotClass
                     .getMethod("getBlockId", int.class, int.class, int.class);
 
-            // DIAGNOSTIC: Check if MemSlot actually has data at multiple positions
-            int test000 = (int) getBlockIdMethod.invoke(slot, 0, 0, 0);
-            int test555 = (int) getBlockIdMethod.invoke(slot, 5, 5, 5);
-            int test151515 = (int) getBlockIdMethod.invoke(slot, 15, 15, 15);
-
-            // Get pointer and isReleased for ultramine MemSlot
-            long pointer = -1;
-            boolean isReleased = true;
-            try {
-                java.lang.reflect.Method getPointerMethod = slotClass.getDeclaredMethod("getPointer");
-                getPointerMethod.setAccessible(true);
-                pointer = (long) getPointerMethod.invoke(slot);
-
-                java.lang.reflect.Field isReleasedField = slotClass.getSuperclass().getDeclaredField("isReleased");
-                isReleasedField.setAccessible(true);
-                isReleased = (boolean) isReleasedField.get(slot);
-            } catch (Exception e) {
-                // Ignore
-            }
-
-            LOGGER.info(
-                    "[SYNC] MemSlot: slot={}, ptr=0x{}, released={}, (0,0,0)={}, (5,5,5)={}, (15,15,15)={}",
-                    slotClass.getSimpleName(),
-                    Long.toHexString(pointer),
-                    isReleased,
-                    test000,
-                    test555,
-                    test151515);
+            // DEBUG: Uncomment for debugging MemSlot state
+            /*
+             * // DIAGNOSTIC: Check if MemSlot actually has data at multiple positions int test000 = (int)
+             * getBlockIdMethod.invoke(slot, 0, 0, 0); int test555 = (int) getBlockIdMethod.invoke(slot, 5, 5, 5); int
+             * test151515 = (int) getBlockIdMethod.invoke(slot, 15, 15, 15); // Get pointer and isReleased for ultramine
+             * MemSlot long pointer = -1; boolean isReleased = true; try { java.lang.reflect.Method getPointerMethod =
+             * slotClass.getDeclaredMethod("getPointer"); getPointerMethod.setAccessible(true); pointer = (long)
+             * getPointerMethod.invoke(slot); java.lang.reflect.Field isReleasedField =
+             * slotClass.getSuperclass().getDeclaredField("isReleased"); isReleasedField.setAccessible(true); isReleased
+             * = (boolean) isReleasedField.get(slot); } catch (Exception e) { // Ignore } LOGGER.info(
+             * "[SYNC] MemSlot: slot={}, ptr=0x{}, released={}, (0,0,0)={}, (5,5,5)={}, (15,15,15)={}",
+             * slotClass.getSimpleName(), Long.toHexString(pointer), isReleased, test000, test555, test151515);
+             */
             java.lang.reflect.Method getMetaMethod = slotClass.getMethod("getMeta", int.class, int.class, int.class);
 
-            // Sample for logging
-            int nonAirBlocks = 0;
-            int sampleBlockId = -1;
-            int sampleX = -1, sampleY = -1, sampleZ = -1;
+            // DEBUG: Uncomment for sampling and logging
+            // int nonAirBlocks = 0;
+            // int sampleBlockId = -1;
+            // int sampleX = -1, sampleY = -1, sampleZ = -1;
 
             // CRITICAL FIX: NEID arrays use COORDINATE indexing (y<<8|z<<4|x), NOT sequential!
             // Base NEID's getBlockId/setBlockId/removeInvalidBlocks all use coordinate indexing!
@@ -352,27 +325,20 @@ public abstract class MixinExtendedBlockStorageUltramine {
                         targetBlockArray[coordIndex] = (short) (blockId & 0xFFFF);
                         targetMetaArray[coordIndex] = (short) (meta & 0xFFFF);
 
-                        // Sample for debug
-                        if (blockId != 0) {
-                            nonAirBlocks++;
-                            if (sampleBlockId == -1) {
-                                sampleBlockId = blockId;
-                                sampleX = x;
-                                sampleY = y;
-                                sampleZ = z;
-                            }
-                        }
+                        // DEBUG: Uncomment for sampling
+                        /*
+                         * if (blockId != 0) { nonAirBlocks++; if (sampleBlockId == -1) { sampleBlockId = blockId;
+                         * sampleX = x; sampleY = y; sampleZ = z; } }
+                         */
                     }
                 }
             }
 
-            LOGGER.info(
-                    "Synced MemSlot→NEID: {} non-air blocks. Sample: block {} at ({},{},{})",
-                    nonAirBlocks,
-                    sampleBlockId,
-                    sampleX,
-                    sampleY,
-                    sampleZ);
+            // DEBUG: Uncomment for logging
+            /*
+             * LOGGER.info( "Synced MemSlot→NEID: {} non-air blocks. Sample: block {} at ({},{},{})", nonAirBlocks,
+             * sampleBlockId, sampleX, sampleY, sampleZ);
+             */
         } catch (NoSuchFieldException e) {
             LOGGER.error("MemSlot field not found", e);
         } catch (NoSuchMethodException e) {

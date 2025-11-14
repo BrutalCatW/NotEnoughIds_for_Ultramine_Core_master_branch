@@ -49,7 +49,8 @@ public class MixinEbsSaveFakeNbt {
     public void convertToNbt() {
         if (isNbt) return;
 
-        LOGGER.info("OVERWRITE convertToNbt: Writing NEID 16-bit format");
+        // DEBUG: Uncomment for debugging
+        // LOGGER.info("OVERWRITE convertToNbt: Writing NEID 16-bit format");
 
         try {
             // Create the map for NBT tags
@@ -111,16 +112,13 @@ public class MixinEbsSaveFakeNbt {
             ((net.minecraft.nbt.NBTTagCompound) (Object) this).setByteArray("Add", msbData);
             ((net.minecraft.nbt.NBTTagCompound) (Object) this).setByteArray("Data", vanillaMetaData);
 
-            LOGGER.info(
-                    "Wrote vanilla format from NEID arrays: Blocks={} (first 4: {} {} {} {}), Add={}, Data={}, nonZero={}",
-                    lsbData.length,
-                    lsbData[0] & 0xFF,
-                    lsbData[1] & 0xFF,
-                    lsbData[2] & 0xFF,
-                    lsbData[3] & 0xFF,
-                    msbData.length,
-                    vanillaMetaData.length,
-                    nonZeroBlocks);
+            // DEBUG: Uncomment for debugging
+            /*
+             * LOGGER.info(
+             * "Wrote vanilla format from NEID arrays: Blocks={} (first 4: {} {} {} {}), Add={}, Data={}, nonZero={}",
+             * lsbData.length, lsbData[0] & 0xFF, lsbData[1] & 0xFF, lsbData[2] & 0xFF, lsbData[3] & 0xFF,
+             * msbData.length, vanillaMetaData.length, nonZeroBlocks);
+             */
 
             // Also write NEID 16-bit format (uses linear order for ByteBuffer compatibility)
             byte[] blocks16 = new byte[4096 * 2];
@@ -176,7 +174,8 @@ public class MixinEbsSaveFakeNbt {
         }
 
         isNbt = true;
-        LOGGER.info("Successfully wrote NEID 16-bit format in convertToNbt");
+        // DEBUG: Uncomment for debugging
+        // LOGGER.info("Successfully wrote NEID 16-bit format in convertToNbt");
     }
 
     /**
@@ -184,13 +183,15 @@ public class MixinEbsSaveFakeNbt {
      */
     @Inject(method = "<init>", at = @At("RETURN"), require = 0, remap = false)
     private void neid$forceConvertAfterInit(ExtendedBlockStorage ebs, boolean hasNoSky, CallbackInfo ci) {
-        LOGGER.info(
-                "INJECT <init>: Force converting to NEID NBT format immediately. EBS={}, hasNoSky={}, Thread={}",
-                ebs != null ? "present" : "null",
-                hasNoSky,
-                Thread.currentThread().getName());
+        // DEBUG: Uncomment for debugging
+        /*
+         * LOGGER.info(
+         * "INJECT <init>: Force converting to NEID NBT format immediately. EBS={}, hasNoSky={}, Thread={}", ebs != null
+         * ? "present" : "null", hasNoSky, Thread.currentThread().getName());
+         */
         convertToNbt();
-        LOGGER.info("INJECT <init>: Completed convertToNbt(), isNbt={}", isNbt);
+        // DEBUG: Uncomment for debugging
+        // LOGGER.info("INJECT <init>: Completed convertToNbt(), isNbt={}", isNbt);
     }
 
     /**
