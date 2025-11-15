@@ -354,8 +354,9 @@ public abstract class MixinS21PacketChunkDataUltramine {
 
             // DEBUG: Uncomment for debugging
             /*
-             * LOGGER.info( "INJECT deflate(): Creating NEID 16-bit format - ebsCount={}, mask=0x{}, hasNoSky={}",
-             * ebsCount, Integer.toHexString(mask), hasNoSky);
+             * LOGGER.info(
+             *     "INJECT deflate(): Creating NEID 16-bit format - ebsCount={}, mask=0x{}, hasNoSky={}, totalSize={}, biomeLen={}",
+             *     ebsCount, Integer.toHexString(mask), hasNoSky, totalSize, biomeArray.length);
              */
 
             // PHASE 1: Write all 16-bit blocks (READ FROM MEMSLOT!)
@@ -435,9 +436,12 @@ public abstract class MixinS21PacketChunkDataUltramine {
 
             // PHASE 5: Write biome
             System.arraycopy(biomeArray, 0, data, offset, biomeArray.length);
+            offset += biomeArray.length; // Update offset to reflect actual data size
 
-            // Deflate the data
-            deflater.setInput(data, 0, data.length);
+            // CRITICAL FIX: Use offset (actual data size) instead of data.length!
+            // For hasNoSky=true, data.length includes space for SkyLight, but we didn't write it!
+            // Using data.length would compress extra zeros, causing "Bad compressed data format" on client!
+            deflater.setInput(data, 0, offset);
             deflater.finish();
 
             byte[] deflated = new byte[4096];
@@ -458,8 +462,9 @@ public abstract class MixinS21PacketChunkDataUltramine {
 
             // DEBUG: Uncomment for debugging
             /*
-             * LOGGER.info( "INJECT deflate() complete: rawSize={}, deflatedSize={}, mask=0x{}", data.length,
-             * deflatedLen, Integer.toHexString(mask));
+             * LOGGER.info(
+             *     "INJECT deflate() complete: actualDataSize={}, bufferSize={}, deflatedSize={}, mask=0x{}, savedBytes={}",
+             *     offset, totalSize, deflatedLen, Integer.toHexString(mask), totalSize - offset);
              */
 
         } catch (Exception e) {
