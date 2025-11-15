@@ -12,13 +12,18 @@ import org.spongepowered.asm.mixin.Overwrite;
 import org.spongepowered.asm.mixin.Shadow;
 
 import com.gtnewhorizons.neid.Constants;
-import com.gtnewhorizons.neid.mixins.interfaces.IExtendedBlockStorageMixin;
 
 /**
  * Ultramine-specific compatibility mixin for S21PacketChunkData.
  *
- * TWO PATHS TO HANDLE: 1. VANILLA PATH: func_149269_a() - @Overwrite converts MemSlot to 16-bit NEID 2. ULTRAMINE PATH:
- * deflate() → UMHooks.extractAndDeflateChunkPacketData() - @Redirect converts to 16-bit NEID
+ * CRITICAL FIX: This mixin converts Ultramine's MemSlot format to NEID 16-bit format for both paths:
+ * 1. VANILLA PATH: func_149269_a() - @Overwrite reads from MemSlot with coordinate ordering
+ * 2. ULTRAMINE PATH: deflate() - @Inject reads from MemSlot with coordinate ordering
+ *
+ * KEY POINTS:
+ * - Always reads from MemSlot (NOT from NEID arrays - they may be empty in ChunkSnapshot!)
+ * - Uses coordinate-ordered nibble reading for MSB and Metadata
+ * - Correctly handles hasNoSky (The End, Nether) - no SkyLight data
  *
  * Priority 1500 ensures it applies after base NEID mixins.
  */
@@ -280,9 +285,12 @@ public abstract class MixinS21PacketChunkDataUltramine {
     }
 
     /**
-     * ULTRAMINE PATH INJECT: Override deflate() to use NEID 16-bit format instead of ultramine's 8-bit format!
+     * CRITICAL ULTRAMINE PATH: Override deflate() to convert MemSlot format to NEID 16-bit format!
      *
      * This handles the ChunkSendManager async path: makeForSend(ChunkSnapshot) → deflate()
+     *
+     * CRITICAL: ChunkSnapshot copies MemSlot but NOT NEID arrays! So we MUST read from MemSlot,
+     * NOT from getBlock16BArray()/getBlock16BMetaArray() (they will be null/empty)!
      */
     @org.spongepowered.asm.mixin.injection.Inject(
             method = "deflate",
@@ -313,14 +321,12 @@ public abstract class MixinS21PacketChunkDataUltramine {
         // LOGGER.info("@@@ INJECT deflate() - converting ChunkSnapshot to NEID 16-bit!");
 
         java.util.zip.Deflater deflater = new java.util.zip.Deflater(7);
-        // DEBUG: Uncomment for debugging
-        // LOGGER.info("[DEFLATE] Step 1: Created Deflater");
         try {
-            // Get ExtendedBlockStorage[] from ChunkSnapshot
+            // Get data from ChunkSnapshot
             ExtendedBlockStorage[] ebsArr = (ExtendedBlockStorage[]) chunkSnapshot.getClass().getMethod("getEbsArr")
                     .invoke(chunkSnapshot);
-            // DEBUG: Uncomment for debugging
-            // LOGGER.info("[DEFLATE] Step 2: Got ebsArr, length={}", ebsArr != null ? ebsArr.length : "null");
+            boolean hasNoSky = (boolean) chunkSnapshot.getClass().getMethod("isWorldHasNoSky").invoke(chunkSnapshot);
+            byte[] biomeArray = (byte[]) chunkSnapshot.getClass().getMethod("getBiomeArray").invoke(chunkSnapshot);
 
             // Calculate mask
             int mask = 0;
@@ -328,13 +334,9 @@ public abstract class MixinS21PacketChunkDataUltramine {
                 ExtendedBlockStorage ebs = ebsArr[i];
                 if (ebs != null && !ebs.isEmpty()) mask |= 1 << i;
             }
-            // DEBUG: Uncomment for debugging
-            // LOGGER.info("[DEFLATE] Step 3: Calculated mask=0x{}", Integer.toHexString(mask));
 
             if (mask == 0) {
-                // Empty chunk
-                // DEBUG: Uncomment for debugging
-                // LOGGER.info("[DEFLATE] Step 4: Empty chunk, returning");
+                // Empty chunk - use pre-compressed sequence
                 byte[] EMPTY_CHUNK_SEQUENCE = { 120, -38, -19, -65, 49, 1, 0, 0, 0, -62, -96, -11, 79, 109, 13, 15, -96,
                         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, -128, 119, 3, 48, 0, 0, 1 };
                 this.field_149281_e = EMPTY_CHUNK_SEQUENCE;
@@ -344,70 +346,74 @@ public abstract class MixinS21PacketChunkDataUltramine {
                 return;
             }
 
-            // Create NEID 16-bit format data
+            // Create NEID 16-bit format data (READING FROM MEMSLOT!)
             int ebsCount = Integer.bitCount(mask);
-            // DEBUG: Uncomment for debugging
-            // LOGGER.info("[DEFLATE] Step 4: ebsCount={}", ebsCount);
-            boolean hasNoSky = (boolean) chunkSnapshot.getClass().getMethod("isWorldHasNoSky").invoke(chunkSnapshot);
-            // DEBUG: Uncomment for debugging
-            // LOGGER.info("[DEFLATE] Step 5: hasNoSky={}", hasNoSky);
-            byte[] biomeArray = (byte[]) chunkSnapshot.getClass().getMethod("getBiomeArray").invoke(chunkSnapshot);
-            // DEBUG: Uncomment for debugging
-            // LOGGER.info("[DEFLATE] Step 6: biomeArray.length={}", biomeArray != null ? biomeArray.length : "null");
-
             int totalSize = ebsCount * Constants.BYTES_PER_EBS + biomeArray.length;
-            // DEBUG: Uncomment for debugging
-            // LOGGER.info("[DEFLATE] Step 7: totalSize={}", totalSize);
             byte[] data = new byte[totalSize];
             int offset = 0;
 
             // DEBUG: Uncomment for debugging
             /*
-             * LOGGER.info( "INJECT deflate(): Creating NEID 16-bit format - ebsCount={}, mask=0x{}", ebsCount,
-             * Integer.toHexString(mask));
+             * LOGGER.info( "INJECT deflate(): Creating NEID 16-bit format - ebsCount={}, mask=0x{}, hasNoSky={}",
+             * ebsCount, Integer.toHexString(mask), hasNoSky);
              */
 
-            // PHASE 1: Write all 16-bit blocks
+            // PHASE 1: Write all 16-bit blocks (READ FROM MEMSLOT!)
             for (int i = 0; i < ebsArr.length; i++) {
                 if ((mask & (1 << i)) == 0) continue;
                 ExtendedBlockStorage ebs = ebsArr[i];
+                Object slot = getSlot(ebs);
 
-                IExtendedBlockStorageMixin ebsMixin = (IExtendedBlockStorageMixin) ebs;
-                short[] blockArray = ebsMixin.getBlock16BArray();
+                // Read LSB and MSB from MemSlot
+                byte[] lsb = new byte[4096];
+                byte[] msb = new byte[2048];
+                copyFromSlot(slot, "copyLSB", lsb);
+                copyFromSlot(slot, "copyMSB", msb);
 
-                if (blockArray != null) {
-                    for (int j = 0; j < 4096; j++) {
-                        int blockId = blockArray[j] & 0xFFFF;
-                        data[offset++] = (byte) ((blockId >> 8) & 0xFF);
-                        data[offset++] = (byte) (blockId & 0xFF);
+                // Convert to 16-bit format with COORDINATE ORDERING for MSB
+                for (int y = 0; y < 16; y++) {
+                    for (int z = 0; z < 16; z++) {
+                        for (int x = 0; x < 16; x++) {
+                            int coordIndex = y << 8 | z << 4 | x;
+                            int lsbVal = lsb[coordIndex] & 0xFF;
+                            // CRITICAL: Use coordinate ordering for MSB nibbles!
+                            int msbVal = get4bitsCoordinate(msb, x, y, z);
+                            int blockId = (msbVal << 8) | lsbVal;
+
+                            // Write as big-endian 16-bit
+                            data[offset++] = (byte) ((blockId >> 8) & 0xFF);
+                            data[offset++] = (byte) (blockId & 0xFF);
+                        }
                     }
-                } else {
-                    LOGGER.warn("Block16BArray is null for EBS {}, using zeros", i);
-                    offset += 8192;
                 }
             }
 
-            // PHASE 2: Write all 16-bit metadata
+            // PHASE 2: Write all 16-bit metadata (READ FROM MEMSLOT!)
             for (int i = 0; i < ebsArr.length; i++) {
                 if ((mask & (1 << i)) == 0) continue;
                 ExtendedBlockStorage ebs = ebsArr[i];
+                Object slot = getSlot(ebs);
 
-                IExtendedBlockStorageMixin ebsMixin = (IExtendedBlockStorageMixin) ebs;
-                short[] metaArray = ebsMixin.getBlock16BMetaArray();
+                // Read metadata from MemSlot
+                byte[] meta = new byte[2048];
+                copyFromSlot(slot, "copyBlockMetadata", meta);
 
-                if (metaArray != null) {
-                    for (int j = 0; j < 4096; j++) {
-                        int meta = metaArray[j] & 0xFFFF;
-                        data[offset++] = (byte) ((meta >> 8) & 0xFF);
-                        data[offset++] = (byte) (meta & 0xFF);
+                // Convert to 16-bit format with COORDINATE ORDERING
+                for (int y = 0; y < 16; y++) {
+                    for (int z = 0; z < 16; z++) {
+                        for (int x = 0; x < 16; x++) {
+                            // CRITICAL: Use coordinate ordering for metadata nibbles!
+                            int metaVal = get4bitsCoordinate(meta, x, y, z);
+
+                            // Write as big-endian 16-bit
+                            data[offset++] = 0; // MSB always 0 for metadata
+                            data[offset++] = (byte) (metaVal & 0xFF);
+                        }
                     }
-                } else {
-                    LOGGER.warn("Block16BMetaArray is null for EBS {}, using zeros", i);
-                    offset += 8192;
                 }
             }
 
-            // PHASE 3: Write BlockLight from MemSlot
+            // PHASE 3: Write all BlockLight
             for (int i = 0; i < ebsArr.length; i++) {
                 if ((mask & (1 << i)) == 0) continue;
                 ExtendedBlockStorage ebs = ebsArr[i];
@@ -416,7 +422,7 @@ public abstract class MixinS21PacketChunkDataUltramine {
                 offset += 2048;
             }
 
-            // PHASE 4: Write SkyLight from MemSlot
+            // PHASE 4: Write all SkyLight - ONLY if !hasNoSky (CRITICAL for The End/Nether!)
             if (!hasNoSky) {
                 for (int i = 0; i < ebsArr.length; i++) {
                     if ((mask & (1 << i)) == 0) continue;
