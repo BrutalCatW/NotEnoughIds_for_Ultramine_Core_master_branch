@@ -331,16 +331,33 @@ public abstract class MixinS21PacketChunkDataUltramine {
             // DEBUG: Uncomment for debugging
             // LOGGER.info("[DEFLATE] Step 3: Calculated mask=0x{}", Integer.toHexString(mask));
 
+            // Get biomeArray BEFORE empty chunk check (needed for both empty and non-empty chunks)
+            byte[] biomeArray = (byte[]) chunkSnapshot.getClass().getMethod("getBiomeArray").invoke(chunkSnapshot);
+
             if (mask == 0) {
-                // Empty chunk
+                // Empty chunk - generate NEID format (only biome, 256 bytes)
                 // DEBUG: Uncomment for debugging
-                // LOGGER.info("[DEFLATE] Step 4: Empty chunk, returning");
-                byte[] EMPTY_CHUNK_SEQUENCE = { 120, -38, -19, -65, 49, 1, 0, 0, 0, -62, -96, -11, 79, 109, 13, 15, -96,
-                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, -128, 119, 3, 48, 0, 0, 1 };
-                this.field_149281_e = EMPTY_CHUNK_SEQUENCE;
-                this.field_149285_h = EMPTY_CHUNK_SEQUENCE.length;
-                this.field_149280_d = 1;
-                this.field_149283_c = 1;
+                // LOGGER.info("[DEFLATE] Step 4: Empty chunk, creating NEID format");
+
+                deflater.setInput(biomeArray, 0, biomeArray.length);
+                deflater.finish();
+
+                byte[] deflated = new byte[256];
+                int deflatedLen = 0;
+                while (!deflater.finished()) {
+                    if (deflatedLen == deflated.length) {
+                        deflated = java.util.Arrays.copyOf(deflated, deflated.length * 2);
+                    }
+                    deflatedLen += deflater.deflate(deflated, deflatedLen, deflated.length - deflatedLen);
+                }
+
+                this.field_149281_e = java.util.Arrays.copyOf(deflated, deflatedLen);
+                this.field_149285_h = deflatedLen;
+                this.field_149280_d = 0; // NO sections
+                this.field_149283_c = 0; // NO MSB for NEID
+
+                // Release snapshot
+                chunkSnapshot.getClass().getMethod("release").invoke(chunkSnapshot);
                 return;
             }
 
@@ -351,7 +368,6 @@ public abstract class MixinS21PacketChunkDataUltramine {
             boolean hasNoSky = (boolean) chunkSnapshot.getClass().getMethod("isWorldHasNoSky").invoke(chunkSnapshot);
             // DEBUG: Uncomment for debugging
             // LOGGER.info("[DEFLATE] Step 5: hasNoSky={}", hasNoSky);
-            byte[] biomeArray = (byte[]) chunkSnapshot.getClass().getMethod("getBiomeArray").invoke(chunkSnapshot);
             // DEBUG: Uncomment for debugging
             // LOGGER.info("[DEFLATE] Step 6: biomeArray.length={}", biomeArray != null ? biomeArray.length : "null");
 
