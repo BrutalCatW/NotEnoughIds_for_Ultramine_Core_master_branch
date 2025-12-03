@@ -65,10 +65,18 @@ public abstract class MixinS21PacketChunkDataUltramine {
                 chunk.getClass().getField("field_76642_o").setBoolean(chunk, true); // sendUpdates
             }
 
+            // CRITICAL: Ensure section 0 always exists (vanilla behavior)
+            // Section 0 (y=0-15) must be included even if empty for proper chunk initialization!
+            if (ebsArray[0] == null) {
+                ebsArray[0] = new ExtendedBlockStorage(0, true);
+            }
+
             // Calculate ebsMask
             int ebsMask = 0;
             for (int i = 0; i < ebsArray.length; i++) {
-                if (ebsArray[i] != null && (!fullChunk || !isEbsEmpty(ebsArray[i])) && (sectionMask & (1 << i)) != 0) {
+                // CRITICAL: Section 0 is ALWAYS included (i == 0 || ...) - vanilla behavior!
+                if (ebsArray[i] != null && (i == 0 || !fullChunk || !isEbsEmpty(ebsArray[i]))
+                        && (sectionMask & (1 << i)) != 0) {
                     ebsMask |= 1 << i;
                 }
             }
@@ -88,7 +96,7 @@ public abstract class MixinS21PacketChunkDataUltramine {
             return extracted;
 
         } catch (Exception e) {
-            LOGGER.error("Failed in func_149269_a()", e);
+            // LOGGER.error("Failed in func_149269_a()", e);
             throw new RuntimeException(e);
         }
     }
@@ -235,7 +243,7 @@ public abstract class MixinS21PacketChunkDataUltramine {
             return data;
 
         } catch (Exception e) {
-            LOGGER.error("Failed to create NEID format data", e);
+            // LOGGER.error("Failed to create NEID format data", e);
             return new byte[0];
         }
     }
@@ -322,11 +330,20 @@ public abstract class MixinS21PacketChunkDataUltramine {
             // DEBUG: Uncomment for debugging
             // LOGGER.info("[DEFLATE] Step 2: Got ebsArr, length={}", ebsArr != null ? ebsArr.length : "null");
 
+            // CRITICAL: Ensure section 0 always exists (vanilla behavior)
+            // Section 0 (y=0-15) must be included even if empty for proper chunk initialization!
+            if (ebsArr[0] == null) {
+                ebsArr[0] = new ExtendedBlockStorage(0, true);
+            }
+
             // Calculate mask
             int mask = 0;
             for (int i = 0; i < ebsArr.length; ++i) {
                 ExtendedBlockStorage ebs = ebsArr[i];
-                if (ebs != null && !ebs.isEmpty()) mask |= 1 << i;
+                // CRITICAL: Section 0 is ALWAYS included (i == 0 || ...) - vanilla behavior!
+                if (ebs != null && (i == 0 || !ebs.isEmpty())) {
+                    mask |= 1 << i;
+                }
             }
             // DEBUG: Uncomment for debugging
             // LOGGER.info("[DEFLATE] Step 3: Calculated mask=0x{}", Integer.toHexString(mask));
@@ -398,7 +415,7 @@ public abstract class MixinS21PacketChunkDataUltramine {
                         data[offset++] = (byte) (blockId & 0xFF);
                     }
                 } else {
-                    LOGGER.warn("Block16BArray is null for EBS {}, using zeros", i);
+                    // LOGGER.warn("Block16BArray is null for EBS {}, using zeros", i);
                     offset += 8192;
                 }
             }
@@ -418,7 +435,7 @@ public abstract class MixinS21PacketChunkDataUltramine {
                         data[offset++] = (byte) (meta & 0xFF);
                     }
                 } else {
-                    LOGGER.warn("Block16BMetaArray is null for EBS {}, using zeros", i);
+                    // LOGGER.warn("Block16BMetaArray is null for EBS {}, using zeros", i);
                     offset += 8192;
                 }
             }
@@ -473,7 +490,7 @@ public abstract class MixinS21PacketChunkDataUltramine {
              */
 
         } catch (Exception e) {
-            LOGGER.error("INJECT deflate() FAILED!", e);
+            // LOGGER.error("INJECT deflate() FAILED!", e);
             // Set empty data to avoid crash
             this.field_149281_e = new byte[0];
             this.field_149285_h = 0;

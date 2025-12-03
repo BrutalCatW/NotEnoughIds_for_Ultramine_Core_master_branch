@@ -81,7 +81,7 @@ public class MixinAnvilChunkLoaderUltramine {
             // LOGGER.info("Loaded extended metadata for {} sections", loadedSections);
 
         } catch (Exception e) {
-            LOGGER.error("Failed to load extended metadata", e);
+            // LOGGER.error("Failed to load extended metadata", e);
         }
     }
 

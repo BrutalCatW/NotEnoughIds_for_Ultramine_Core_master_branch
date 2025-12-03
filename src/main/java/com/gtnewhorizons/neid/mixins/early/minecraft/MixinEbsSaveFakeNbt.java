@@ -59,7 +59,7 @@ public class MixinEbsSaveFakeNbt {
             createMapMethod.setAccessible(true);
             createMapMethod.invoke(this, 0);
         } catch (Exception e) {
-            LOGGER.error("Failed to create NBT map", e);
+            // LOGGER.error("Failed to create NBT map", e);
             return;
         }
 
@@ -78,7 +78,7 @@ public class MixinEbsSaveFakeNbt {
             short[] block16BMetaArray = ebsMixin.getBlock16BMetaArray();
 
             if (block16BArray == null || block16BMetaArray == null) {
-                LOGGER.error("NEID arrays are null, cannot write NBT!");
+                // LOGGER.error("NEID arrays are null, cannot write NBT!");
                 return;
             }
 
@@ -147,7 +147,7 @@ public class MixinEbsSaveFakeNbt {
             ((net.minecraft.nbt.NBTTagCompound) (Object) this).setByteArray("Data16", data16);
 
         } catch (Exception e) {
-            LOGGER.error("Failed to read/write block data from MemSlot", e);
+            // LOGGER.error("Failed to read/write block data from MemSlot", e);
             return;
         }
 
@@ -170,7 +170,7 @@ public class MixinEbsSaveFakeNbt {
                 ((net.minecraft.nbt.NBTTagCompound) (Object) this).setByteArray("SkyLight", skyLight);
             }
         } catch (Exception e) {
-            LOGGER.error("Failed to write lighting data", e);
+            // LOGGER.error("Failed to write lighting data", e);
         }
 
         isNbt = true;

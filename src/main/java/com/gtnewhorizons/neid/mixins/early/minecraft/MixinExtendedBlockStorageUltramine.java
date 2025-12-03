@@ -82,13 +82,13 @@ public abstract class MixinExtendedBlockStorageUltramine {
                         // DEBUG: Uncomment for debugging
                         // LOGGER.debug("[COPY] Copied NEID arrays (16-bit metadata preserved)");
                     } else {
-                        LOGGER.warn("[COPY] Copy NEID arrays are null, cannot copy");
+                        // LOGGER.warn("[COPY] Copy NEID arrays are null, cannot copy");
                     }
                 } else {
-                    LOGGER.warn("[COPY] Original NEID arrays are null, cannot copy");
+                    // LOGGER.warn("[COPY] Original NEID arrays are null, cannot copy");
                 }
             } catch (Exception e) {
-                LOGGER.error("[COPY] Failed to copy NEID arrays", e);
+                // LOGGER.error("[COPY] Failed to copy NEID arrays", e);
             }
         }
     }
@@ -211,7 +211,7 @@ public abstract class MixinExtendedBlockStorageUltramine {
 
         if (block16BArray == null || block16BMetaArray == null) {
             if (DEBUG) {
-                LOGGER.warn("NEID arrays are null, skipping sync");
+                // LOGGER.warn("NEID arrays are null, skipping sync");
             }
             return;
         }
@@ -220,7 +220,7 @@ public abstract class MixinExtendedBlockStorageUltramine {
         Object slot = getSlotViaReflection();
         if (slot == null) {
             if (DEBUG) {
-                LOGGER.warn("MemSlot is null, skipping sync");
+                // LOGGER.warn("MemSlot is null, skipping sync");
             }
             return;
         }
@@ -269,16 +269,16 @@ public abstract class MixinExtendedBlockStorageUltramine {
             }
 
             if (DEBUG && (truncatedBlocks > 0 || truncatedMetaCount > 0)) {
-                LOGGER.info(
-                        "Sync complete. Truncated {} extended block IDs and {} extended metadata values",
-                        truncatedBlocks,
-                        truncatedMetaCount);
+                // LOGGER.info(
+                //         "Sync complete. Truncated {} extended block IDs and {} extended metadata values",
+                //         truncatedBlocks,
+                //         truncatedMetaCount);
             }
 
         } catch (NoSuchMethodException e) {
-            LOGGER.error("Failed to find MemSlot methods. ultramine API may have changed.", e);
+            // LOGGER.error("Failed to find MemSlot methods. ultramine API may have changed.", e);
         } catch (Exception e) {
-            LOGGER.error("Failed to sync NEID arrays to MemSlot", e);
+            // LOGGER.error("Failed to sync NEID arrays to MemSlot", e);
         }
     }
 
@@ -301,11 +301,11 @@ public abstract class MixinExtendedBlockStorageUltramine {
         } catch (NoSuchFieldException e) {
             // Field doesn't exist - not ultramine or different version
             if (DEBUG) {
-                LOGGER.error("slot field not found in ExtendedBlockStorage", e);
+                // LOGGER.error("slot field not found in ExtendedBlockStorage", e);
             }
             return null;
         } catch (Exception e) {
-            LOGGER.error("Failed to access slot field", e);
+            // LOGGER.error("Failed to access slot field", e);
             return null;
         }
     }
@@ -321,7 +321,7 @@ public abstract class MixinExtendedBlockStorageUltramine {
             short[] targetMetaArray = ebsMixin.getBlock16BMetaArray();
 
             if (targetBlockArray == null || targetMetaArray == null) {
-                LOGGER.warn("Target NEID arrays are null, cannot sync from MemSlot");
+                // LOGGER.warn("Target NEID arrays are null, cannot sync from MemSlot");
                 return;
             }
 
@@ -331,7 +331,7 @@ public abstract class MixinExtendedBlockStorageUltramine {
             Object slot = slotField.get(ebs);
 
             if (slot == null) {
-                LOGGER.warn("Target EBS has null MemSlot, cannot sync");
+                // LOGGER.warn("Target EBS has null MemSlot, cannot sync");
                 return;
             }
 
@@ -371,11 +371,11 @@ public abstract class MixinExtendedBlockStorageUltramine {
                 }
             }
         } catch (NoSuchFieldException e) {
-            LOGGER.error("MemSlot field not found", e);
+            // LOGGER.error("MemSlot field not found", e);
         } catch (NoSuchMethodException e) {
-            LOGGER.error("Failed to find MemSlot methods", e);
+            // LOGGER.error("Failed to find MemSlot methods", e);
         } catch (Exception e) {
-            LOGGER.error("Failed to sync MemSlot to NEID arrays", e);
+            // LOGGER.error("Failed to sync MemSlot to NEID arrays", e);
         }
     }
 }
