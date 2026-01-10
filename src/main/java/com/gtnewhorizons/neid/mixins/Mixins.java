@@ -20,14 +20,25 @@ public enum Mixins implements IMixins {
             "minecraft.MixinS24PacketBlockAction",
             "minecraft.MixinS26PacketMapChunkBulk",
             "minecraft.MixinItemInWorldManager",
-            "minecraft.MixinAnvilChunkLoader",
             "minecraft.MixinBlock")),
+    VANILLA_STARTUP_CHUNK_SAVE(new MixinBuilder()
+        .addCommonMixins("minecraft.MixinAnvilChunkLoader")
+        .addExcludedMod(TargetMods.ULTRAMINE)),
     VANILLA_STARTUP_ONLY_WITHOUT_THERMOS(new MixinBuilder()
         .addCommonMixins("minecraft.MixinS21PacketChunkData")
-        .addExcludedMod(TargetMods.THERMOS)),
+        .addExcludedMod(TargetMods.THERMOS)
+        .addExcludedMod(TargetMods.ULTRAMINE)),
     VANILLA_STARTUP_ONLY_WITH_THERMOS(new MixinBuilder()
         .addCommonMixins("minecraft.MixinS21PacketChunkDataThermosTainted")
-        .addRequiredMod(TargetMods.THERMOS)),
+        .addRequiredMod(TargetMods.THERMOS)
+        .addExcludedMod(TargetMods.ULTRAMINE)),
+    VANILLA_STARTUP_WITH_ULTRAMINE(new MixinBuilder()
+        .addCommonMixins(
+            "minecraft.MixinExtendedBlockStorageUltramine",
+            "minecraft.MixinS21PacketChunkDataUltramine",
+            "minecraft.MixinAnvilChunkLoaderUltramine",
+            "minecraft.MixinEbsSaveFakeNbt")
+        .addRequiredMod(TargetMods.ULTRAMINE)),
     VANILLA_STARTUP_CLIENT(new MixinBuilder()
         .addClientMixins(
             "minecraft.client.MixinRenderGlobal",

@@ -7,7 +7,8 @@ import com.gtnewhorizon.gtnhmixins.builders.TargetModBuilder;
 
 public enum TargetMods implements ITargetMod {
 
-    THERMOS(new TargetModBuilder().setTargetClass("org.bukkit.World"));
+    THERMOS(new TargetModBuilder().setTargetClass("org.bukkit.World")),
+    ULTRAMINE(new TargetModBuilder().setTargetClass("org.ultramine.server.chunk.alloc.MemSlot"));
 
     private final TargetModBuilder builder;
 
