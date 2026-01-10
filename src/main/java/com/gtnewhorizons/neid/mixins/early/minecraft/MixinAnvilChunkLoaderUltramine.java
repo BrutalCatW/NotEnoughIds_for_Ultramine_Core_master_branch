@@ -36,10 +36,17 @@ public class MixinAnvilChunkLoaderUltramine {
      */
 
     /**
-     * CRITICAL: After loading chunk from NBT, load extended metadata from "Data16"! Ultramine loads vanilla
-     * "Blocks"/"Add"/"Data" (4-bit metadata) into MemSlot, bypassing NEID's @Redirect. The base NEID @Inject in
-     * removeInvalidBlocks() will sync MemSlot→NEID arrays (4-bit metadata). Then we must load "Data16" to restore
-     * extended (16-bit) metadata into NEID arrays!
+     * CRITICAL: After loading chunk from NBT, load extended data from "Blocks16" and "Data16"!
+     *
+     * Problem: Ultramine loads vanilla "Blocks"/"Add"/"Data" (12-bit block IDs, 4-bit metadata) into MemSlot,
+     * bypassing NEID's @Redirect. The base NEID @Inject in removeInvalidBlocks() syncs MemSlot→NEID arrays,
+     * but this TRUNCATES block IDs > 4095 and metadata > 15!
+     *
+     * Solution: After vanilla load, we override NEID arrays with "Blocks16" (full 16-bit block IDs) and
+     * "Data16" (full 16-bit metadata) from NBT, restoring extended values.
+     *
+     * This fixes the issue where blocks with ID > 4095 (e.g., Et Futurum flowers) turn into wrong blocks
+     * (e.g., plutonium) after world reload.
      */
     @Inject(method = "readChunkFromNBT", at = @At("RETURN"), require = 0)
     private void neid$loadExtendedMetadataAfterLoad(net.minecraft.world.World world,
@@ -63,10 +70,19 @@ public class MixinAnvilChunkLoaderUltramine {
 
                 if (yLevel >= 0 && yLevel < ebsArray.length && ebsArray[yLevel] != null) {
                     ExtendedBlockStorage ebs = ebsArray[yLevel];
+                    IExtendedBlockStorageMixin ebsMixin = (IExtendedBlockStorageMixin) ebs;
+
+                    // CRITICAL: Load "Blocks16" FIRST (16-bit extended block IDs)
+                    // Without this, blocks with ID > 4095 will be truncated!
+                    if (sectionNbt.hasKey("Blocks16")) {
+                        byte[] blocks16 = sectionNbt.getByteArray("Blocks16");
+                        ebsMixin.setBlockData(blocks16, 0);
+                        // DEBUG: Uncomment for debugging
+                        // LOGGER.debug("Loaded Blocks16 for section Y={}, length={}", yLevel, blocks16.length);
+                    }
 
                     // Load "Data16" if present (16-bit extended metadata)
                     if (sectionNbt.hasKey("Data16")) {
-                        IExtendedBlockStorageMixin ebsMixin = (IExtendedBlockStorageMixin) ebs;
                         byte[] data16 = sectionNbt.getByteArray("Data16");
                         ebsMixin.setBlockMeta(data16, 0);
                         // DEBUG: Uncomment for counting

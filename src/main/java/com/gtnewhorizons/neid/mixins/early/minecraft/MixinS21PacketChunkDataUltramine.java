@@ -112,8 +112,11 @@ public abstract class MixinS21PacketChunkDataUltramine {
     }
 
     /**
-     * Creates vanilla NEID format data from MemSlot. Format: [all Blocks 16-bit][all Metadata 16-bit][all
+     * Creates vanilla NEID format data from NEID arrays. Format: [all Blocks 16-bit][all Metadata 16-bit][all
      * BlockLight][all SkyLight][biome]
+     *
+     * CRITICAL: Reads from NEID arrays (block16BArray/block16BMetaArray), NOT from MemSlot!
+     * MemSlot only stores 12-bit block IDs and 4-bit metadata, which truncates extended IDs/metadata.
      */
     private static byte[] createNeidFormatData(ExtendedBlockStorage[] ebsArray, int ebsMask, boolean fullChunk,
             net.minecraft.world.chunk.Chunk chunk) {
@@ -136,40 +139,25 @@ public abstract class MixinS21PacketChunkDataUltramine {
                 if ((ebsMask & (1 << sectionIndex)) == 0) continue;
 
                 ExtendedBlockStorage ebs = ebsArray[sectionIndex];
-                Object slot = getSlot(ebs);
+                IExtendedBlockStorageMixin ebsMixin = (IExtendedBlockStorageMixin) ebs;
 
-                // Read LSB (4096 bytes) and MSB (2048 bytes) from MemSlot
-                byte[] lsb = new byte[4096];
-                byte[] msb = new byte[2048];
-                copyFromSlot(slot, "copyLSB", lsb);
-                copyFromSlot(slot, "copyMSB", msb);
+                // CRITICAL FIX: Read from NEID arrays, NOT from MemSlot!
+                // MemSlot only stores 12-bit block IDs (max 4095), but NEID supports 16-bit (max 65535).
+                // Reading from MemSlot truncates IDs like 11315 (cornflower) to 3123 (plutonium)!
+                short[] block16BArray = ebsMixin.getBlock16BArray();
 
-                // DEBUG: Uncomment for debugging LSB bytes
-                /*
-                 * StringBuilder lsbDebug = new StringBuilder(); for (int i = 0; i < Math.min(32, lsb.length); i++) {
-                 * lsbDebug.append(String.format("%02X ", lsb[i] & 0xFF)); } LOGGER.info(
-                 * "EBS section={}, slot={}, first 32 LSB bytes: {}", sectionIndex, slot.getClass().getSimpleName(),
-                 * lsbDebug.toString());
-                 */
+                if (block16BArray == null) {
+                    // LOGGER.warn("block16BArray is null for section {}, using zeros", sectionIndex);
+                    offset += 8192; // Skip this section
+                    continue;
+                }
 
-                // DEBUG: Uncomment for block counting
-                // int nonZeroBlocks = 0;
-                // int blocksWithMSB = 0;
-
-                // CRITICAL: Write in LINEAR order (matching client's ShortBuffer.put())
-                // Index calculation y << 8 | z << 4 | x creates sequential indices 0,1,2,3...
+                // Write blocks in coordinate order (y << 8 | z << 4 | x)
                 for (int y = 0; y < 16; y++) {
                     for (int z = 0; z < 16; z++) {
                         for (int x = 0; x < 16; x++) {
-                            int index = y << 8 | z << 4 | x;
-                            int lsbVal = lsb[index] & 0xFF;
-                            int msbVal = get4bitsCoordinate(msb, x, y, z);
-                            int blockId = (msbVal << 8) | lsbVal;
-
-                            // DEBUG: Uncomment for block counting
-                            /*
-                             * if (blockId != 0) { nonZeroBlocks++; if (msbVal != 0) blocksWithMSB++; }
-                             */
+                            int coordIndex = y << 8 | z << 4 | x;
+                            int blockId = block16BArray[coordIndex] & 0xFFFF;
 
                             // Write as big-endian 16-bit
                             data[offset++] = (byte) ((blockId >> 8) & 0xFF);
@@ -177,9 +165,6 @@ public abstract class MixinS21PacketChunkDataUltramine {
                         }
                     }
                 }
-
-                // DEBUG: Uncomment for logging
-                // LOGGER.info("EBS section={}: nonZero={}, withMSB={}", sectionIndex, nonZeroBlocks, blocksWithMSB);
             }
 
             // PHASE 2: Write all metadata (16-bit, 8192 bytes per EBS) - GROUPED
@@ -187,20 +172,27 @@ public abstract class MixinS21PacketChunkDataUltramine {
                 if ((ebsMask & (1 << sectionIndex)) == 0) continue;
 
                 ExtendedBlockStorage ebs = ebsArray[sectionIndex];
-                Object slot = getSlot(ebs);
+                IExtendedBlockStorageMixin ebsMixin = (IExtendedBlockStorageMixin) ebs;
 
-                // Read metadata (2048 bytes 4-bit nibbles) from MemSlot
-                byte[] meta = new byte[2048];
-                copyFromSlot(slot, "copyBlockMetadata", meta);
+                // CRITICAL FIX: Read from NEID arrays, NOT from MemSlot!
+                // MemSlot only stores 4-bit metadata (max 15), but NEID supports 16-bit (max 65535).
+                short[] block16BMetaArray = ebsMixin.getBlock16BMetaArray();
 
-                // CRITICAL: Convert 4-bit nibbles to 16-bit using coordinate-based reading!
+                if (block16BMetaArray == null) {
+                    // LOGGER.warn("block16BMetaArray is null for section {}, using zeros", sectionIndex);
+                    offset += 8192; // Skip this section
+                    continue;
+                }
+
+                // Write metadata in coordinate order (y << 8 | z << 4 | x)
                 for (int y = 0; y < 16; y++) {
                     for (int z = 0; z < 16; z++) {
                         for (int x = 0; x < 16; x++) {
-                            int metaVal = get4bitsCoordinate(meta, x, y, z);
+                            int coordIndex = y << 8 | z << 4 | x;
+                            int metaVal = block16BMetaArray[coordIndex] & 0xFFFF;
 
                             // Write as big-endian 16-bit
-                            data[offset++] = 0; // MSB always 0
+                            data[offset++] = (byte) ((metaVal >> 8) & 0xFF);
                             data[offset++] = (byte) (metaVal & 0xFF);
                         }
                     }

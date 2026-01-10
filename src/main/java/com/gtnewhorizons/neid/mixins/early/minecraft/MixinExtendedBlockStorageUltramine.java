@@ -270,9 +270,9 @@ public abstract class MixinExtendedBlockStorageUltramine {
 
             if (DEBUG && (truncatedBlocks > 0 || truncatedMetaCount > 0)) {
                 // LOGGER.info(
-                //         "Sync complete. Truncated {} extended block IDs and {} extended metadata values",
-                //         truncatedBlocks,
-                //         truncatedMetaCount);
+                // "Sync complete. Truncated {} extended block IDs and {} extended metadata values",
+                // truncatedBlocks,
+                // truncatedMetaCount);
             }
 
         } catch (NoSuchMethodException e) {
