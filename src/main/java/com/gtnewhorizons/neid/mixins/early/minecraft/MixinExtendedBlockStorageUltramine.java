@@ -1,18 +1,15 @@
 package com.gtnewhorizons.neid.mixins.early.minecraft;
 
+import com.gtnewhorizons.neid.mixins.interfaces.IExtendedBlockStorageMixin;
 import net.minecraft.world.chunk.storage.ExtendedBlockStorage;
-
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.Logger;
 import org.spongepowered.asm.mixin.Mixin;
-import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
+import org.ultramine.server.chunk.alloc.MemSlot;
 
-import com.gtnewhorizons.neid.mixins.interfaces.IExtendedBlockStorageMixin;
-
+// spotless:off
 /**
  * Ultramine-specific compatibility mixin for ExtendedBlockStorage. This mixin handles synchronization between NEID's
  * 16-bit block arrays and ultramine_core's off-heap MemSlot storage.
@@ -21,36 +18,7 @@ import com.gtnewhorizons.neid.mixins.interfaces.IExtendedBlockStorageMixin;
  */
 @Mixin(value = ExtendedBlockStorage.class, priority = 1500)
 public abstract class MixinExtendedBlockStorageUltramine {
-
-    private static final Logger LOGGER = LogManager.getLogger("NEID-Ultramine");
     private static final boolean DEBUG = Boolean.getBoolean("neid.ultramine.debug");
-
-    // Shadow fields from base NEID mixin
-    @Shadow
-    private int blockRefCount;
-
-    @Shadow
-    private int tickRefCount;
-
-    // PERFORMANCE: Cache reflection methods to avoid repeated lookups
-    private static volatile java.lang.reflect.Field cachedSlotField;
-    private static volatile java.lang.reflect.Method cachedSetBlockIdMethod;
-    private static volatile java.lang.reflect.Method cachedSetMetaMethod;
-
-    /**
-     * DIAGNOSTIC: Log ORIGINAL MemSlot state before copy() to verify it has data. COMMENTED OUT - uncomment for
-     * debugging if needed
-     */
-    /*
-     * @Inject(method = "copy", at = @At("HEAD"), remap = false, require = 0) private void
-     * neid$syncBeforeCopy(CallbackInfoReturnable<ExtendedBlockStorage> cir) { try { java.lang.reflect.Field slotField =
-     * ExtendedBlockStorage.class.getDeclaredField("slot"); slotField.setAccessible(true); Object slot =
-     * slotField.get(this); if (slot != null) { Class<?> slotClass = slot.getClass(); java.lang.reflect.Method
-     * getBlockIdMethod = slotClass .getMethod("getBlockId", int.class, int.class, int.class); int origTest = (int)
-     * getBlockIdMethod.invoke(slot, 0, 0, 0); LOGGER.info( "[COPY-BEFORE] ORIGINAL MemSlot: slot={}, block(0,0,0)={}",
-     * slotClass.getSimpleName(), origTest); } else { LOGGER.warn("[COPY-BEFORE] ORIGINAL MemSlot is NULL!"); } } catch
-     * (Exception e) { LOGGER.error("[COPY-BEFORE] Failed to check original MemSlot", e); } }
-     */
 
     /**
      * CRITICAL: After copy() returns, copy NEID arrays from ORIGINAL to COPY! Ultramine copy() creates new EBS with
@@ -122,28 +90,9 @@ public abstract class MixinExtendedBlockStorageUltramine {
     @Inject(method = "setBlockId", at = @At("RETURN"), remap = false, require = 0)
     private void neid$syncToMemSlotAfterSetBlock(int x, int y, int z, int id, CallbackInfo ci) {
         try {
-            // Initialize cache on first call
-            if (cachedSlotField == null) {
-                synchronized (MixinExtendedBlockStorageUltramine.class) {
-                    if (cachedSlotField == null) {
-                        cachedSlotField = ExtendedBlockStorage.class.getDeclaredField("slot");
-                        cachedSlotField.setAccessible(true);
-                    }
-                }
-            }
-
-            Object slot = cachedSlotField.get(this);
+            MemSlot slot = ((ExtendedBlockStorage)(Object) this).getSlot();
             if (slot != null) {
-                // Initialize method cache on first call
-                if (cachedSetBlockIdMethod == null) {
-                    synchronized (MixinExtendedBlockStorageUltramine.class) {
-                        if (cachedSetBlockIdMethod == null) {
-                            cachedSetBlockIdMethod = slot.getClass()
-                                    .getMethod("setBlockId", int.class, int.class, int.class, int.class);
-                        }
-                    }
-                }
-                cachedSetBlockIdMethod.invoke(slot, x, y, z, id);
+                slot.setBlockId(x, y, z, id);
             }
         } catch (Exception e) {
             // Silently ignore - setBlockId is called very frequently
@@ -159,29 +108,10 @@ public abstract class MixinExtendedBlockStorageUltramine {
     @Inject(method = "setExtBlockMetadata", at = @At("RETURN"), require = 0)
     private void neid$syncMetaToMemSlotAfterSetMetadata(int x, int y, int z, int meta, CallbackInfo ci) {
         try {
-            // Initialize cache on first call
-            if (cachedSlotField == null) {
-                synchronized (MixinExtendedBlockStorageUltramine.class) {
-                    if (cachedSlotField == null) {
-                        cachedSlotField = ExtendedBlockStorage.class.getDeclaredField("slot");
-                        cachedSlotField.setAccessible(true);
-                    }
-                }
-            }
-
-            Object slot = cachedSlotField.get(this);
+            MemSlot slot = ((ExtendedBlockStorage)(Object) this).getSlot();
             if (slot != null) {
-                // Initialize method cache on first call
-                if (cachedSetMetaMethod == null) {
-                    synchronized (MixinExtendedBlockStorageUltramine.class) {
-                        if (cachedSetMetaMethod == null) {
-                            cachedSetMetaMethod = slot.getClass()
-                                    .getMethod("setMeta", int.class, int.class, int.class, int.class);
-                        }
-                    }
-                }
                 // MemSlot only supports 4-bit metadata, truncate to avoid errors
-                cachedSetMetaMethod.invoke(slot, x, y, z, meta & 0xF);
+                slot.setMeta(x, y, z, meta & 0xF);
             }
         } catch (Exception e) {
             // Silently ignore - setExtBlockMetadata is called very frequently
@@ -216,27 +146,9 @@ public abstract class MixinExtendedBlockStorageUltramine {
             return;
         }
 
-        // Get slot field through reflection (it's added by ultramine)
-        Object slot = getSlotViaReflection();
-        if (slot == null) {
-            if (DEBUG) {
-                // LOGGER.warn("MemSlot is null, skipping sync");
-            }
-            return;
-        }
+        MemSlot slot = ((ExtendedBlockStorage) (Object) this).getSlot();
 
         try {
-            // Use reflection to access MemSlot methods
-            // This avoids compile-time dependency on ultramine classes
-            Class<?> memSlotClass = slot.getClass();
-
-            // Get methods: setBlockId(int x, int y, int z, int id)
-            // setMeta(int x, int y, int z, int meta)
-            java.lang.reflect.Method setBlockIdMethod = memSlotClass
-                    .getMethod("setBlockId", int.class, int.class, int.class, int.class);
-            java.lang.reflect.Method setMetaMethod = memSlotClass
-                    .getMethod("setMeta", int.class, int.class, int.class, int.class);
-
             int truncatedBlocks = 0;
             int truncatedMetaCount = 0;
 
@@ -261,9 +173,7 @@ public abstract class MixinExtendedBlockStorageUltramine {
                             truncatedMetaCount++;
                         }
 
-                        // Invoke setBlockId and setMeta on MemSlot
-                        setBlockIdMethod.invoke(slot, x, y, z, truncatedBlockId);
-                        setMetaMethod.invoke(slot, x, y, z, metaValue);
+                        slot.setBlockIdAndMeta(x, y, z, truncatedBlockId, metaValue);
                     }
                 }
             }
@@ -275,38 +185,8 @@ public abstract class MixinExtendedBlockStorageUltramine {
                 // truncatedMetaCount);
             }
 
-        } catch (NoSuchMethodException e) {
-            // LOGGER.error("Failed to find MemSlot methods. ultramine API may have changed.", e);
         } catch (Exception e) {
             // LOGGER.error("Failed to sync NEID arrays to MemSlot", e);
-        }
-    }
-
-    /**
-     * Gets the MemSlot field from this ExtendedBlockStorage instance using reflection. The slot field is added by
-     * ultramine, so we can't use @Shadow. PERFORMANCE: Uses cached field to avoid repeated lookups.
-     */
-    private Object getSlotViaReflection() {
-        try {
-            // Initialize cache on first call
-            if (cachedSlotField == null) {
-                synchronized (MixinExtendedBlockStorageUltramine.class) {
-                    if (cachedSlotField == null) {
-                        cachedSlotField = ExtendedBlockStorage.class.getDeclaredField("slot");
-                        cachedSlotField.setAccessible(true);
-                    }
-                }
-            }
-            return cachedSlotField.get(this);
-        } catch (NoSuchFieldException e) {
-            // Field doesn't exist - not ultramine or different version
-            if (DEBUG) {
-                // LOGGER.error("slot field not found in ExtendedBlockStorage", e);
-            }
-            return null;
-        } catch (Exception e) {
-            // LOGGER.error("Failed to access slot field", e);
-            return null;
         }
     }
 
@@ -325,30 +205,20 @@ public abstract class MixinExtendedBlockStorageUltramine {
                 return;
             }
 
-            // Get MemSlot from the target EBS
-            java.lang.reflect.Field slotField = ExtendedBlockStorage.class.getDeclaredField("slot");
-            slotField.setAccessible(true);
-            Object slot = slotField.get(ebs);
+            MemSlot slot = ebs.getSlot();
 
             if (slot == null) {
                 // LOGGER.warn("Target EBS has null MemSlot, cannot sync");
                 return;
             }
 
-            // PERFORMANCE OPTIMIZATION: Use bulk copy instead of 8192 reflection calls!
-            // Copy LSB, MSB, and metadata arrays directly from MemSlot
-            Class<?> slotClass = slot.getClass();
-            java.lang.reflect.Method copyLSBMethod = slotClass.getMethod("copyLSB", byte[].class);
-            java.lang.reflect.Method copyMSBMethod = slotClass.getMethod("copyMSB", byte[].class);
-            java.lang.reflect.Method copyMetaMethod = slotClass.getMethod("copyBlockMetadata", byte[].class);
-
             byte[] lsb = new byte[4096];
             byte[] msb = new byte[2048];
             byte[] meta = new byte[2048];
 
-            copyLSBMethod.invoke(slot, lsb);
-            copyMSBMethod.invoke(slot, msb);
-            copyMetaMethod.invoke(slot, meta);
+            slot.copyLSB(lsb);
+            slot.copyMSB(msb);
+            slot.copyBlockMetadata(meta);
 
             // Convert from coordinate-ordered vanilla arrays to NEID coordinate-indexed arrays
             // OPTIMIZATION: Process in coordinate order for both LSB and nibbles
@@ -370,12 +240,9 @@ public abstract class MixinExtendedBlockStorageUltramine {
                     }
                 }
             }
-        } catch (NoSuchFieldException e) {
-            // LOGGER.error("MemSlot field not found", e);
-        } catch (NoSuchMethodException e) {
-            // LOGGER.error("Failed to find MemSlot methods", e);
         } catch (Exception e) {
             // LOGGER.error("Failed to sync MemSlot to NEID arrays", e);
         }
     }
 }
+// spotless:on

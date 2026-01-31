@@ -3,3 +3,8 @@
 plugins {
     id 'com.gtnewhorizons.gtnhconvention'
 }
+
+jar {
+    exclude 'net/minecraft/**'
+    exclude 'org/ultramine/**'
+}
