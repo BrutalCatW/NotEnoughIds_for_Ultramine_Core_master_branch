@@ -1,13 +1,15 @@
 package com.gtnewhorizons.neid.mixins.early.minecraft;
 
-import com.gtnewhorizons.neid.mixins.interfaces.IExtendedBlockStorageMixin;
 import net.minecraft.world.chunk.storage.ExtendedBlockStorage;
+
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 import org.ultramine.server.chunk.alloc.MemSlot;
+
+import com.gtnewhorizons.neid.mixins.interfaces.IExtendedBlockStorageMixin;
 
 // spotless:off
 /**

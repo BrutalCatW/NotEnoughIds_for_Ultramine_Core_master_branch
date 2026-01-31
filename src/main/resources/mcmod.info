@@ -3,7 +3,7 @@
     "modid": "${modId}",
     "name": "${modName}",
     "description": "Extends hardcoded block ID limit.",
-    "version": "${modVersion}",
+    "version": "2.1.10",
     "mcversion": "${minecraftVersion}",
     "updateUrl": "",
     "authorList": ["fewizz","Player"],
